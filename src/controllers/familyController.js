@@ -1,6 +1,7 @@
 const db = require("../config/database");
 const path = require("path");
 const fs = require("fs/promises");
+const bcrypt = require("bcryptjs");
 
 // FAMILY PROFILE
 const getMyFamily = async (req, res) => {
@@ -1499,6 +1500,1377 @@ const deleteMyWife = async (req, res) => {
   }
 };
 
+// CHILDREN
+const createMyChild = async (req, res) => {
+  try {
+    const family = await db("families")
+      .where({ user_id: req.user.id })
+      .whereNull("deleted_at")
+      .select("id", "form_status", "editing_enabled")
+      .first();
+
+    if (!family) {
+      return res.status(404).json({
+        message: "سجل الأسرة غير موجود.",
+      });
+    }
+
+    if (!family.editing_enabled) {
+      return res.status(403).json({
+        message: "التعديل مغلق حاليًا لهذه الأسرة.",
+      });
+    }
+
+    if (family.form_status !== "draft") {
+      return res.status(403).json({
+        message: "لا يمكن إضافة ابن بعد اعتماد النموذج.",
+      });
+    }
+
+    const {
+      full_name,
+      national_id,
+      date_of_birth,
+      education_status,
+      institution_name,
+    } = req.body;
+
+    if (!full_name || !national_id || !date_of_birth || !education_status) {
+      return res.status(400).json({
+        message: "يرجى تعبئة جميع بيانات الابن المطلوبة.",
+      });
+    }
+
+    if (!/^\d{9}$/.test(String(national_id))) {
+      return res.status(400).json({
+        message: "رقم هوية الابن يجب أن يتكون من 9 أرقام.",
+      });
+    }
+
+    const allowedEducationStatuses = [
+      "under_6",
+      "school",
+      "university",
+      "not_studying",
+    ];
+
+    if (!allowedEducationStatuses.includes(education_status)) {
+      return res.status(400).json({
+        message: "الحالة التعليمية غير صحيحة.",
+      });
+    }
+
+    if (
+      ["school", "university"].includes(education_status) &&
+      !institution_name
+    ) {
+      return res.status(400).json({
+        message: "اسم المؤسسة التعليمية مطلوب للمدرسة أو الجامعة.",
+      });
+    }
+
+    const existingChild = await db("children")
+      .where({
+        family_id: family.id,
+        national_id,
+      })
+      .first();
+
+    if (existingChild) {
+      return res.status(409).json({
+        message: "الابن مسجل مسبقًا داخل هذه الأسرة.",
+      });
+    }
+
+    const [childId] = await db("children").insert({
+      family_id: family.id,
+      full_name: full_name.trim(),
+      national_id,
+      date_of_birth,
+      education_status,
+      institution_name:
+        institution_name && institution_name.trim()
+          ? institution_name.trim()
+          : null,
+    });
+
+    const child = await db("children")
+      .where({ id: childId })
+      .select(
+        "id",
+        "family_id",
+        "full_name",
+        "national_id",
+        db.raw("DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth"),
+        "education_status",
+        "institution_name",
+        "created_at",
+        "updated_at",
+      )
+      .first();
+
+    return res.status(201).json({
+      message: "تمت إضافة الابن بنجاح.",
+      data: {
+        child,
+      },
+    });
+  } catch (error) {
+    console.error("Create child error:", error);
+
+    return res.status(500).json({
+      message: "حدث خطأ أثناء إضافة الابن.",
+    });
+  }
+};
+const getMyChildren = async (req, res) => {
+  try {
+    const family = await db("families")
+      .where({ user_id: req.user.id })
+      .whereNull("deleted_at")
+      .select("id")
+      .first();
+
+    if (!family) {
+      return res.status(404).json({
+        message: "سجل الأسرة غير موجود.",
+      });
+    }
+
+    const children = await db("children")
+      .where({ family_id: family.id })
+      .select(
+        "id",
+        "family_id",
+        "full_name",
+        "national_id",
+        db.raw("DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth"),
+        "education_status",
+        "institution_name",
+        "created_at",
+        "updated_at",
+      )
+      .orderBy("created_at", "asc");
+
+    return res.status(200).json({
+      message: "تم جلب بيانات الأبناء بنجاح.",
+      data: {
+        children,
+        count: children.length,
+      },
+    });
+  } catch (error) {
+    console.error("Get children error:", error);
+
+    return res.status(500).json({
+      message: "حدث خطأ أثناء جلب بيانات الأبناء.",
+    });
+  }
+};
+const getMyChild = async (req, res) => {
+  try {
+    const childId = Number(req.params.childId);
+
+    if (!Number.isInteger(childId) || childId <= 0) {
+      return res.status(400).json({
+        message: "رقم الابن غير صحيح.",
+      });
+    }
+
+    const family = await db("families")
+      .where({ user_id: req.user.id })
+      .whereNull("deleted_at")
+      .select("id")
+      .first();
+
+    if (!family) {
+      return res.status(404).json({
+        message: "سجل الأسرة غير موجود.",
+      });
+    }
+
+    const child = await db("children")
+      .where({
+        id: childId,
+        family_id: family.id,
+      })
+      .select(
+        "id",
+        "family_id",
+        "full_name",
+        "national_id",
+        db.raw("DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth"),
+        "education_status",
+        "institution_name",
+        "created_at",
+        "updated_at",
+      )
+      .first();
+
+    if (!child) {
+      return res.status(404).json({
+        message: "بيانات الابن غير موجودة.",
+      });
+    }
+
+    return res.status(200).json({
+      message: "تم جلب بيانات الابن بنجاح.",
+      data: {
+        child,
+      },
+    });
+  } catch (error) {
+    console.error("Get child error:", error);
+
+    return res.status(500).json({
+      message: "حدث خطأ أثناء جلب بيانات الابن.",
+    });
+  }
+};
+const updateMyChild = async (req, res) => {
+  try {
+    const childId = Number(req.params.childId);
+
+    if (!Number.isInteger(childId) || childId <= 0) {
+      return res.status(400).json({
+        message: "رقم الابن غير صحيح.",
+      });
+    }
+
+    const family = await db("families")
+      .where({ user_id: req.user.id })
+      .whereNull("deleted_at")
+      .select("id", "form_status", "editing_enabled")
+      .first();
+
+    if (!family) {
+      return res.status(404).json({
+        message: "سجل الأسرة غير موجود.",
+      });
+    }
+
+    if (!family.editing_enabled) {
+      return res.status(403).json({
+        message: "التعديل مغلق حاليًا لهذه الأسرة.",
+      });
+    }
+
+    if (family.form_status !== "draft") {
+      return res.status(403).json({
+        message: "لا يمكن تعديل بيانات الابن بعد اعتماد النموذج.",
+      });
+    }
+
+    const child = await db("children")
+      .where({
+        id: childId,
+        family_id: family.id,
+      })
+      .first();
+
+    if (!child) {
+      return res.status(404).json({
+        message: "بيانات الابن غير موجودة.",
+      });
+    }
+
+    const {
+      full_name,
+      national_id,
+      date_of_birth,
+      education_status,
+      institution_name,
+    } = req.body;
+
+    if (national_id !== undefined && !/^\d{9}$/.test(String(national_id))) {
+      return res.status(400).json({
+        message: "رقم هوية الابن يجب أن يتكون من 9 أرقام.",
+      });
+    }
+
+    const allowedEducationStatuses = [
+      "under_6",
+      "school",
+      "university",
+      "not_studying",
+    ];
+
+    if (
+      education_status !== undefined &&
+      !allowedEducationStatuses.includes(education_status)
+    ) {
+      return res.status(400).json({
+        message: "الحالة التعليمية غير صحيحة.",
+      });
+    }
+
+    if (
+      national_id !== undefined &&
+      String(national_id) !== String(child.national_id)
+    ) {
+      const duplicateChild = await db("children")
+        .where({
+          family_id: family.id,
+          national_id,
+        })
+        .whereNot({ id: childId })
+        .first();
+
+      if (duplicateChild) {
+        return res.status(409).json({
+          message: "رقم الهوية مسجل لابن آخر داخل هذه الأسرة.",
+        });
+      }
+    }
+
+    const finalEducationStatus =
+      education_status !== undefined
+        ? education_status
+        : child.education_status;
+
+    const finalInstitutionName =
+      institution_name !== undefined
+        ? institution_name
+        : child.institution_name;
+
+    if (
+      ["school", "university"].includes(finalEducationStatus) &&
+      !String(finalInstitutionName || "").trim()
+    ) {
+      return res.status(400).json({
+        message: "اسم المؤسسة التعليمية مطلوب للمدرسة أو الجامعة.",
+      });
+    }
+
+    const updates = {};
+
+    if (full_name !== undefined) {
+      updates.full_name = String(full_name).trim();
+    }
+
+    if (national_id !== undefined) {
+      updates.national_id = String(national_id);
+    }
+
+    if (date_of_birth !== undefined) {
+      updates.date_of_birth = date_of_birth;
+    }
+
+    if (education_status !== undefined) {
+      updates.education_status = education_status;
+    }
+
+    if (institution_name !== undefined) {
+      updates.institution_name = String(institution_name).trim() || null;
+    }
+
+    if (
+      education_status !== undefined &&
+      ["under_6", "not_studying"].includes(education_status) &&
+      institution_name === undefined
+    ) {
+      updates.institution_name = null;
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({
+        message: "لم يتم إرسال أي بيانات للتعديل.",
+      });
+    }
+
+    await db("children")
+      .where({
+        id: childId,
+        family_id: family.id,
+      })
+      .update(updates);
+
+    const updatedChild = await db("children")
+      .where({ id: childId })
+      .select(
+        "id",
+        "family_id",
+        "full_name",
+        "national_id",
+        db.raw("DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth"),
+        "education_status",
+        "institution_name",
+        "created_at",
+        "updated_at",
+      )
+      .first();
+
+    return res.status(200).json({
+      message: "تم تعديل بيانات الابن بنجاح.",
+      data: {
+        child: updatedChild,
+      },
+    });
+  } catch (error) {
+    console.error("Update child error:", error);
+
+    return res.status(500).json({
+      message: "حدث خطأ أثناء تعديل بيانات الابن.",
+    });
+  }
+};
+const deleteMyChild = async (req, res) => {
+  try {
+    const childId = Number(req.params.childId);
+
+    if (!Number.isInteger(childId) || childId <= 0) {
+      return res.status(400).json({
+        message: "رقم الابن غير صحيح.",
+      });
+    }
+
+    const family = await db("families")
+      .where({ user_id: req.user.id })
+      .whereNull("deleted_at")
+      .select("id", "form_status", "editing_enabled")
+      .first();
+
+    if (!family) {
+      return res.status(404).json({
+        message: "سجل الأسرة غير موجود.",
+      });
+    }
+
+    if (!family.editing_enabled) {
+      return res.status(403).json({
+        message: "التعديل مغلق حاليًا لهذه الأسرة.",
+      });
+    }
+
+    if (family.form_status !== "draft") {
+      return res.status(403).json({
+        message: "لا يمكن حذف بيانات الابن بعد اعتماد النموذج.",
+      });
+    }
+
+    const child = await db("children")
+      .where({
+        id: childId,
+        family_id: family.id,
+      })
+      .select("id", "full_name")
+      .first();
+
+    if (!child) {
+      return res.status(404).json({
+        message: "بيانات الابن غير موجودة.",
+      });
+    }
+
+    await db("children")
+      .where({
+        id: childId,
+        family_id: family.id,
+      })
+      .delete();
+
+    return res.status(200).json({
+      message: "تم حذف بيانات الابن بنجاح.",
+      data: {
+        child: {
+          id: child.id,
+          full_name: child.full_name,
+        },
+      },
+    });
+  } catch (error) {
+    console.error("Delete child error:", error);
+
+    return res.status(500).json({
+      message: "حدث خطأ أثناء حذف بيانات الابن.",
+    });
+  }
+};
+
+// MARRIED DAUGHTERS
+const getMyMarriedDaughters = async (req, res) => {
+  try {
+    const family = await db("families")
+      .where({ user_id: req.user.id })
+      .whereNull("deleted_at")
+      .select("id")
+      .first();
+
+    if (!family) {
+      return res.status(404).json({
+        message: "سجل الأسرة غير موجود.",
+      });
+    }
+
+    const marriedDaughters = await db("married_daughters")
+      .where({ family_id: family.id })
+      .select(
+        "id",
+        "family_id",
+        "full_name",
+        "national_id",
+        "phone",
+        "husband_full_name",
+        "husband_phone",
+        "created_at",
+        "updated_at",
+      )
+      .orderBy("created_at", "asc");
+
+    return res.status(200).json({
+      message: "تم جلب بيانات البنات المتزوجات بنجاح.",
+      data: {
+        married_daughters: marriedDaughters,
+        count: marriedDaughters.length,
+      },
+    });
+  } catch (error) {
+    console.error("Get married daughters error:", error);
+
+    return res.status(500).json({
+      message: "حدث خطأ أثناء جلب بيانات البنات المتزوجات.",
+    });
+  }
+};
+const createMyMarriedDaughter = async (req, res) => {
+  try {
+    const family = await db("families")
+      .where({ user_id: req.user.id })
+      .whereNull("deleted_at")
+      .select("id", "form_status", "editing_enabled")
+      .first();
+
+    if (!family) {
+      return res.status(404).json({
+        message: "سجل الأسرة غير موجود.",
+      });
+    }
+
+    if (!family.editing_enabled) {
+      return res.status(403).json({
+        message: "التعديل مغلق حاليًا لهذه الأسرة.",
+      });
+    }
+
+    if (family.form_status !== "draft") {
+      return res.status(403).json({
+        message: "لا يمكن إضافة بنت متزوجة بعد اعتماد النموذج.",
+      });
+    }
+
+    const { full_name, national_id, phone, husband_full_name, husband_phone } =
+      req.body;
+
+    if (
+      !full_name ||
+      !national_id ||
+      !phone ||
+      !husband_full_name ||
+      !husband_phone
+    ) {
+      return res.status(400).json({
+        message: "يرجى تعبئة جميع بيانات البنت المتزوجة المطلوبة.",
+      });
+    }
+
+    if (!/^\d{9}$/.test(String(national_id))) {
+      return res.status(400).json({
+        message: "رقم هوية البنت يجب أن يتكون من 9 أرقام.",
+      });
+    }
+
+    const existingDaughter = await db("married_daughters")
+      .where({
+        family_id: family.id,
+        national_id,
+      })
+      .first();
+
+    if (existingDaughter) {
+      return res.status(409).json({
+        message: "البنت المتزوجة مسجلة مسبقًا داخل هذه الأسرة.",
+      });
+    }
+
+    const [daughterId] = await db("married_daughters").insert({
+      family_id: family.id,
+      full_name: full_name.trim(),
+      national_id: String(national_id),
+      phone: phone.trim(),
+      husband_full_name: husband_full_name.trim(),
+      husband_phone: husband_phone.trim(),
+    });
+
+    const daughter = await db("married_daughters")
+      .where({ id: daughterId })
+      .select(
+        "id",
+        "family_id",
+        "full_name",
+        "national_id",
+        "phone",
+        "husband_full_name",
+        "husband_phone",
+        "created_at",
+        "updated_at",
+      )
+      .first();
+
+    return res.status(201).json({
+      message: "تمت إضافة البنت المتزوجة بنجاح.",
+      data: {
+        daughter,
+      },
+    });
+  } catch (error) {
+    console.error("Create married daughter error:", error);
+
+    return res.status(500).json({
+      message: "حدث خطأ أثناء إضافة البنت المتزوجة.",
+    });
+  }
+};
+const getMyMarriedDaughter = async (req, res) => {
+  try {
+    const daughterId = Number(req.params.daughterId);
+
+    if (!Number.isInteger(daughterId) || daughterId <= 0) {
+      return res.status(400).json({
+        message: "رقم البنت المتزوجة غير صحيح.",
+      });
+    }
+
+    const family = await db("families")
+      .where({ user_id: req.user.id })
+      .whereNull("deleted_at")
+      .select("id")
+      .first();
+
+    if (!family) {
+      return res.status(404).json({
+        message: "سجل الأسرة غير موجود.",
+      });
+    }
+
+    const daughter = await db("married_daughters")
+      .where({
+        id: daughterId,
+        family_id: family.id,
+      })
+      .select(
+        "id",
+        "family_id",
+        "full_name",
+        "national_id",
+        "phone",
+        "husband_full_name",
+        "husband_phone",
+        "created_at",
+        "updated_at",
+      )
+      .first();
+
+    if (!daughter) {
+      return res.status(404).json({
+        message: "بيانات البنت المتزوجة غير موجودة.",
+      });
+    }
+
+    return res.status(200).json({
+      message: "تم جلب بيانات البنت المتزوجة بنجاح.",
+      data: {
+        daughter,
+      },
+    });
+  } catch (error) {
+    console.error("Get married daughter error:", error);
+
+    return res.status(500).json({
+      message: "حدث خطأ أثناء جلب بيانات البنت المتزوجة.",
+    });
+  }
+};
+const updateMyMarriedDaughter = async (req, res) => {
+  try {
+    const daughterId = Number(req.params.daughterId);
+
+    if (!Number.isInteger(daughterId) || daughterId <= 0) {
+      return res.status(400).json({
+        message: "رقم البنت المتزوجة غير صحيح.",
+      });
+    }
+
+    const family = await db("families")
+      .where({ user_id: req.user.id })
+      .whereNull("deleted_at")
+      .select("id", "form_status", "editing_enabled")
+      .first();
+
+    if (!family) {
+      return res.status(404).json({
+        message: "سجل الأسرة غير موجود.",
+      });
+    }
+
+    if (!family.editing_enabled) {
+      return res.status(403).json({
+        message: "التعديل مغلق حاليًا لهذه الأسرة.",
+      });
+    }
+
+    if (family.form_status !== "draft") {
+      return res.status(403).json({
+        message: "لا يمكن تعديل بيانات البنت المتزوجة بعد اعتماد النموذج.",
+      });
+    }
+
+    const daughter = await db("married_daughters")
+      .where({
+        id: daughterId,
+        family_id: family.id,
+      })
+      .first();
+
+    if (!daughter) {
+      return res.status(404).json({
+        message: "بيانات البنت المتزوجة غير موجودة.",
+      });
+    }
+
+    const { full_name, national_id, phone, husband_full_name, husband_phone } =
+      req.body;
+
+    if (national_id !== undefined && !/^\d{9}$/.test(String(national_id))) {
+      return res.status(400).json({
+        message: "رقم هوية البنت يجب أن يتكون من 9 أرقام.",
+      });
+    }
+
+    if (
+      national_id !== undefined &&
+      String(national_id) !== String(daughter.national_id)
+    ) {
+      const duplicateDaughter = await db("married_daughters")
+        .where({
+          family_id: family.id,
+          national_id,
+        })
+        .whereNot({ id: daughterId })
+        .first();
+
+      if (duplicateDaughter) {
+        return res.status(409).json({
+          message: "رقم الهوية مسجل لبنت متزوجة أخرى داخل هذه الأسرة.",
+        });
+      }
+    }
+
+    const updates = {};
+
+    if (full_name !== undefined) {
+      updates.full_name = String(full_name).trim();
+    }
+
+    if (national_id !== undefined) {
+      updates.national_id = String(national_id);
+    }
+
+    if (phone !== undefined) {
+      updates.phone = String(phone).trim();
+    }
+
+    if (husband_full_name !== undefined) {
+      updates.husband_full_name = String(husband_full_name).trim();
+    }
+
+    if (husband_phone !== undefined) {
+      updates.husband_phone = String(husband_phone).trim();
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({
+        message: "لم يتم إرسال أي بيانات للتعديل.",
+      });
+    }
+
+    await db("married_daughters")
+      .where({
+        id: daughterId,
+        family_id: family.id,
+      })
+      .update(updates);
+
+    const updatedDaughter = await db("married_daughters")
+      .where({ id: daughterId })
+      .select(
+        "id",
+        "family_id",
+        "full_name",
+        "national_id",
+        "phone",
+        "husband_full_name",
+        "husband_phone",
+        "created_at",
+        "updated_at",
+      )
+      .first();
+
+    return res.status(200).json({
+      message: "تم تعديل بيانات البنت المتزوجة بنجاح.",
+      data: {
+        daughter: updatedDaughter,
+      },
+    });
+  } catch (error) {
+    console.error("Update married daughter error:", error);
+
+    return res.status(500).json({
+      message: "حدث خطأ أثناء تعديل بيانات البنت المتزوجة.",
+    });
+  }
+};
+const deleteMyMarriedDaughter = async (req, res) => {
+  try {
+    const daughterId = Number(req.params.daughterId);
+
+    if (!Number.isInteger(daughterId) || daughterId <= 0) {
+      return res.status(400).json({
+        message: "رقم البنت المتزوجة غير صحيح.",
+      });
+    }
+
+    const family = await db("families")
+      .where({ user_id: req.user.id })
+      .whereNull("deleted_at")
+      .select("id", "form_status", "editing_enabled")
+      .first();
+
+    if (!family) {
+      return res.status(404).json({
+        message: "سجل الأسرة غير موجود.",
+      });
+    }
+
+    if (!family.editing_enabled) {
+      return res.status(403).json({
+        message: "التعديل مغلق حاليًا لهذه الأسرة.",
+      });
+    }
+
+    if (family.form_status !== "draft") {
+      return res.status(403).json({
+        message: "لا يمكن حذف بيانات البنت المتزوجة بعد اعتماد النموذج.",
+      });
+    }
+
+    const daughter = await db("married_daughters")
+      .where({
+        id: daughterId,
+        family_id: family.id,
+      })
+      .select("id", "full_name")
+      .first();
+
+    if (!daughter) {
+      return res.status(404).json({
+        message: "بيانات البنت المتزوجة غير موجودة.",
+      });
+    }
+
+    await db("married_daughters")
+      .where({
+        id: daughterId,
+        family_id: family.id,
+      })
+      .delete();
+
+    return res.status(200).json({
+      message: "تم حذف بيانات البنت المتزوجة بنجاح.",
+      data: {
+        daughter: {
+          id: daughter.id,
+          full_name: daughter.full_name,
+        },
+      },
+    });
+  } catch (error) {
+    console.error("Delete married daughter error:", error);
+
+    return res.status(500).json({
+      message: "حدث خطأ أثناء حذف بيانات البنت المتزوجة.",
+    });
+  }
+};
+
+// SPECIAL CASES
+const getMySpecialCases = async (req, res) => {
+  try {
+    const family = await db("families")
+      .where({ user_id: req.user.id })
+      .whereNull("deleted_at")
+      .select("id")
+      .first();
+
+    if (!family) {
+      return res.status(404).json({
+        message: "سجل الأسرة غير موجود.",
+      });
+    }
+
+    const specialCases = await db("special_cases")
+      .where({ family_id: family.id })
+      .select(
+        "id",
+        "family_id",
+        "full_name",
+        "national_id",
+        db.raw("DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth"),
+        "relationship",
+        "case_type",
+        "case_details",
+        "created_at",
+        "updated_at",
+      )
+      .orderBy("created_at", "asc");
+
+    return res.status(200).json({
+      message: "تم جلب الحالات الخاصة بنجاح.",
+      data: {
+        special_cases: specialCases,
+        count: specialCases.length,
+      },
+    });
+  } catch (error) {
+    console.error("Get special cases error:", error);
+
+    return res.status(500).json({
+      message: "حدث خطأ أثناء جلب الحالات الخاصة.",
+    });
+  }
+};
+const createMySpecialCase = async (req, res) => {
+  try {
+    const family = await db("families")
+      .where({ user_id: req.user.id })
+      .whereNull("deleted_at")
+      .select("id", "form_status", "editing_enabled")
+      .first();
+
+    if (!family) {
+      return res.status(404).json({
+        message: "سجل الأسرة غير موجود.",
+      });
+    }
+
+    if (!family.editing_enabled) {
+      return res.status(403).json({
+        message: "التعديل مغلق حاليًا لهذه الأسرة.",
+      });
+    }
+
+    if (family.form_status !== "draft") {
+      return res.status(403).json({
+        message: "لا يمكن إضافة حالة خاصة بعد اعتماد النموذج.",
+      });
+    }
+
+    const {
+      full_name,
+      national_id,
+      date_of_birth,
+      relationship,
+      case_type,
+      case_details,
+    } = req.body;
+
+    if (
+      !full_name ||
+      !national_id ||
+      !date_of_birth ||
+      !relationship ||
+      !case_type ||
+      !case_details
+    ) {
+      return res.status(400).json({
+        message: "يرجى تعبئة جميع بيانات الحالة الخاصة المطلوبة.",
+      });
+    }
+
+    if (!/^\d{9}$/.test(String(national_id))) {
+      return res.status(400).json({
+        message: "رقم الهوية يجب أن يتكون من 9 أرقام.",
+      });
+    }
+
+    const allowedCaseTypes = [
+      "martyr",
+      "injured",
+      "disability",
+      "patient",
+      "pregnant",
+    ];
+
+    if (!allowedCaseTypes.includes(case_type)) {
+      return res.status(400).json({
+        message: "نوع الحالة الخاصة غير صحيح.",
+      });
+    }
+
+    const existingCase = await db("special_cases")
+      .where({
+        family_id: family.id,
+        national_id: String(national_id),
+        case_type,
+      })
+      .first();
+
+    if (existingCase) {
+      return res.status(409).json({
+        message: "هذه الحالة مسجلة مسبقًا لنفس الشخص داخل الأسرة.",
+      });
+    }
+
+    const [specialCaseId] = await db("special_cases").insert({
+      family_id: family.id,
+      full_name: full_name.trim(),
+      national_id: String(national_id),
+      date_of_birth,
+      relationship: relationship.trim(),
+      case_type,
+      case_details: case_details.trim(),
+    });
+
+    const specialCase = await db("special_cases")
+      .where({ id: specialCaseId })
+      .select(
+        "id",
+        "family_id",
+        "full_name",
+        "national_id",
+        db.raw("DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth"),
+        "relationship",
+        "case_type",
+        "case_details",
+        "created_at",
+        "updated_at",
+      )
+      .first();
+
+    return res.status(201).json({
+      message: "تمت إضافة الحالة الخاصة بنجاح.",
+      data: {
+        special_case: specialCase,
+      },
+    });
+  } catch (error) {
+    console.error("Create special case error:", error);
+
+    return res.status(500).json({
+      message: "حدث خطأ أثناء إضافة الحالة الخاصة.",
+    });
+  }
+};
+const getMySpecialCase = async (req, res) => {
+  try {
+    const caseId = Number(req.params.caseId);
+
+    if (!Number.isInteger(caseId) || caseId <= 0) {
+      return res.status(400).json({
+        message: "رقم الحالة الخاصة غير صحيح.",
+      });
+    }
+
+    const family = await db("families")
+      .where({ user_id: req.user.id })
+      .whereNull("deleted_at")
+      .select("id")
+      .first();
+
+    if (!family) {
+      return res.status(404).json({
+        message: "سجل الأسرة غير موجود.",
+      });
+    }
+
+    const specialCase = await db("special_cases")
+      .where({
+        id: caseId,
+        family_id: family.id,
+      })
+      .select(
+        "id",
+        "family_id",
+        "full_name",
+        "national_id",
+        db.raw("DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth"),
+        "relationship",
+        "case_type",
+        "case_details",
+        "created_at",
+        "updated_at",
+      )
+      .first();
+
+    if (!specialCase) {
+      return res.status(404).json({
+        message: "الحالة الخاصة غير موجودة.",
+      });
+    }
+
+    return res.status(200).json({
+      message: "تم جلب بيانات الحالة الخاصة بنجاح.",
+      data: {
+        special_case: specialCase,
+      },
+    });
+  } catch (error) {
+    console.error("Get special case error:", error);
+
+    return res.status(500).json({
+      message: "حدث خطأ أثناء جلب بيانات الحالة الخاصة.",
+    });
+  }
+};
+const updateMySpecialCase = async (req, res) => {
+  try {
+    const caseId = Number(req.params.caseId);
+
+    if (!Number.isInteger(caseId) || caseId <= 0) {
+      return res.status(400).json({
+        message: "رقم الحالة الخاصة غير صحيح.",
+      });
+    }
+
+    const family = await db("families")
+      .where({ user_id: req.user.id })
+      .whereNull("deleted_at")
+      .select("id", "form_status", "editing_enabled")
+      .first();
+
+    if (!family) {
+      return res.status(404).json({
+        message: "سجل الأسرة غير موجود.",
+      });
+    }
+
+    if (!family.editing_enabled) {
+      return res.status(403).json({
+        message: "التعديل مغلق حاليًا لهذه الأسرة.",
+      });
+    }
+
+    if (family.form_status !== "draft") {
+      return res.status(403).json({
+        message: "لا يمكن تعديل الحالة الخاصة بعد اعتماد النموذج.",
+      });
+    }
+
+    const specialCase = await db("special_cases")
+      .where({
+        id: caseId,
+        family_id: family.id,
+      })
+      .first();
+
+    if (!specialCase) {
+      return res.status(404).json({
+        message: "الحالة الخاصة غير موجودة.",
+      });
+    }
+
+    const {
+      full_name,
+      national_id,
+      date_of_birth,
+      relationship,
+      case_type,
+      case_details,
+    } = req.body;
+
+    if (national_id !== undefined && !/^\d{9}$/.test(String(national_id))) {
+      return res.status(400).json({
+        message: "رقم الهوية يجب أن يتكون من 9 أرقام.",
+      });
+    }
+
+    const allowedCaseTypes = [
+      "martyr",
+      "injured",
+      "disability",
+      "patient",
+      "pregnant",
+    ];
+
+    if (case_type !== undefined && !allowedCaseTypes.includes(case_type)) {
+      return res.status(400).json({
+        message: "نوع الحالة الخاصة غير صحيح.",
+      });
+    }
+
+    const finalNationalId =
+      national_id !== undefined ? String(national_id) : specialCase.national_id;
+
+    const finalCaseType =
+      case_type !== undefined ? case_type : specialCase.case_type;
+
+    const duplicateCase = await db("special_cases")
+      .where({
+        family_id: family.id,
+        national_id: finalNationalId,
+        case_type: finalCaseType,
+      })
+      .whereNot({ id: caseId })
+      .first();
+
+    if (duplicateCase) {
+      return res.status(409).json({
+        message: "هذه الحالة مسجلة مسبقًا لنفس الشخص داخل الأسرة.",
+      });
+    }
+
+    const updates = {};
+
+    if (full_name !== undefined) {
+      updates.full_name = String(full_name).trim();
+    }
+
+    if (national_id !== undefined) {
+      updates.national_id = String(national_id);
+    }
+
+    if (date_of_birth !== undefined) {
+      updates.date_of_birth = date_of_birth;
+    }
+
+    if (relationship !== undefined) {
+      updates.relationship = String(relationship).trim();
+    }
+
+    if (case_type !== undefined) {
+      updates.case_type = case_type;
+    }
+
+    if (case_details !== undefined) {
+      updates.case_details = String(case_details).trim();
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({
+        message: "لم يتم إرسال أي بيانات للتعديل.",
+      });
+    }
+
+    await db("special_cases")
+      .where({
+        id: caseId,
+        family_id: family.id,
+      })
+      .update(updates);
+
+    const updatedSpecialCase = await db("special_cases")
+      .where({ id: caseId })
+      .select(
+        "id",
+        "family_id",
+        "full_name",
+        "national_id",
+        db.raw("DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth"),
+        "relationship",
+        "case_type",
+        "case_details",
+        "created_at",
+        "updated_at",
+      )
+      .first();
+
+    return res.status(200).json({
+      message: "تم تعديل الحالة الخاصة بنجاح.",
+      data: {
+        special_case: updatedSpecialCase,
+      },
+    });
+  } catch (error) {
+    console.error("Update special case error:", error);
+
+    return res.status(500).json({
+      message: "حدث خطأ أثناء تعديل الحالة الخاصة.",
+    });
+  }
+};
+const deleteMySpecialCase = async (req, res) => {
+  try {
+    const caseId = Number(req.params.caseId);
+
+    if (!Number.isInteger(caseId) || caseId <= 0) {
+      return res.status(400).json({
+        message: "رقم الحالة الخاصة غير صحيح.",
+      });
+    }
+
+    const family = await db("families")
+      .where({ user_id: req.user.id })
+      .whereNull("deleted_at")
+      .select("id", "form_status", "editing_enabled")
+      .first();
+
+    if (!family) {
+      return res.status(404).json({
+        message: "سجل الأسرة غير موجود.",
+      });
+    }
+
+    if (!family.editing_enabled) {
+      return res.status(403).json({
+        message: "التعديل مغلق حاليًا لهذه الأسرة.",
+      });
+    }
+
+    if (family.form_status !== "draft") {
+      return res.status(403).json({
+        message: "لا يمكن حذف الحالة الخاصة بعد اعتماد النموذج.",
+      });
+    }
+
+    const specialCase = await db("special_cases")
+      .where({
+        id: caseId,
+        family_id: family.id,
+      })
+      .select("id", "full_name", "case_type")
+      .first();
+
+    if (!specialCase) {
+      return res.status(404).json({
+        message: "الحالة الخاصة غير موجودة.",
+      });
+    }
+
+    await db("special_cases")
+      .where({
+        id: caseId,
+        family_id: family.id,
+      })
+      .delete();
+
+    return res.status(200).json({
+      message: "تم حذف الحالة الخاصة بنجاح.",
+      data: {
+        special_case: {
+          id: specialCase.id,
+          full_name: specialCase.full_name,
+          case_type: specialCase.case_type,
+        },
+      },
+    });
+  } catch (error) {
+    console.error("Delete special case error:", error);
+
+    return res.status(500).json({
+      message: "حدث خطأ أثناء حذف الحالة الخاصة.",
+    });
+  }
+};
+
 module.exports = {
   // FAMILY PROFILE
   getMyFamily,
@@ -1521,4 +2893,25 @@ module.exports = {
   getMyWife,
   updateMyWife,
   deleteMyWife,
+
+  // CHILDREN
+  createMyChild,
+  getMyChildren,
+  getMyChild,
+  updateMyChild,
+  deleteMyChild,
+
+  // MARRIED DAUGHTERS
+  getMyMarriedDaughters,
+  createMyMarriedDaughter,
+  getMyMarriedDaughter,
+  updateMyMarriedDaughter,
+  deleteMyMarriedDaughter,
+
+  // SPECIAL CASES
+  getMySpecialCases,
+  createMySpecialCase,
+  getMySpecialCase,
+  updateMySpecialCase,
+  deleteMySpecialCase,
 };

@@ -1,5 +1,6 @@
 const db = require("../config/database");
 const bcrypt = require("bcryptjs");
+const ExcelJS = require("exceljs");
 
 const getDashboardStats = async (req, res) => {
   try {
@@ -47,7 +48,6 @@ const getDashboardStats = async (req, res) => {
     });
   }
 };
-
 const getFamilies = async (req, res) => {
   try {
     const page = Math.max(Number(req.query.page) || 1, 1);
@@ -167,7 +167,6 @@ const getFamilies = async (req, res) => {
     });
   }
 };
-
 const getFamilyDetails = async (req, res) => {
   try {
     const familyId = Number(req.params.familyId);
@@ -260,7 +259,6 @@ const getFamilyDetails = async (req, res) => {
     });
   }
 };
-
 const createFamily = async (req, res) => {
   const {
     full_name,
@@ -427,7 +425,6 @@ const createFamily = async (req, res) => {
     });
   }
 };
-
 const updateFamily = async (req, res) => {
   try {
     const familyId = Number(req.params.familyId);
@@ -652,7 +649,6 @@ const updateFamily = async (req, res) => {
     });
   }
 };
-
 const deleteFamily = async (req, res) => {
   try {
     const familyId = Number(req.params.familyId);
@@ -710,7 +706,6 @@ const deleteFamily = async (req, res) => {
     });
   }
 };
-
 const restoreFamily = async (req, res) => {
   try {
     const familyId = Number(req.params.familyId);
@@ -769,7 +764,6 @@ const restoreFamily = async (req, res) => {
     });
   }
 };
-
 const updateFamilyEditingStatus = async (req, res) => {
   try {
     const familyId = Number(req.params.familyId);
@@ -826,7 +820,6 @@ const updateFamilyEditingStatus = async (req, res) => {
     });
   }
 };
-
 const updateFamilyFormStatus = async (req, res) => {
   try {
     const familyId = Number(req.params.familyId);
@@ -896,7 +889,328 @@ const updateFamilyFormStatus = async (req, res) => {
     });
   }
 };
+const exportFamiliesExcel = async (req, res) => {
+  try {
+    const status = req.query.status?.trim() || "";
+    const editingEnabled = req.query.editing_enabled;
+    const search = req.query.search?.trim() || "";
 
+    const allowedStatuses = ["draft", "submitted"];
+
+    if (status && !allowedStatuses.includes(status)) {
+      return res.status(400).json({
+        message: "حالة النموذج غير صحيحة.",
+      });
+    }
+
+    if (
+      editingEnabled !== undefined &&
+      !["true", "false"].includes(editingEnabled)
+    ) {
+      return res.status(400).json({
+        message: "قيمة editing_enabled يجب أن تكون true أو false.",
+      });
+    }
+
+    const familiesQuery = db("families")
+      .whereNull("deleted_at")
+      .select(
+        "id",
+        "full_name",
+        "national_id",
+        db.raw("DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth"),
+        "phone",
+        "blood_type",
+        "marital_status",
+        "income_category",
+        "work_status",
+        "job_type",
+        "other_job_type",
+        "form_status",
+        "editing_enabled",
+        db.raw(
+          "DATE_FORMAT(submitted_at, '%Y-%m-%d %H:%i:%s') as submitted_at",
+        ),
+        db.raw("DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') as created_at"),
+      );
+
+    if (status) {
+      familiesQuery.where("form_status", status);
+    }
+
+    if (editingEnabled !== undefined) {
+      familiesQuery.where("editing_enabled", editingEnabled === "true");
+    }
+
+    if (search) {
+      familiesQuery.andWhere((queryBuilder) => {
+        queryBuilder
+          .where("full_name", "like", `%${search}%`)
+          .orWhere("national_id", "like", `%${search}%`)
+          .orWhere("phone", "like", `%${search}%`);
+      });
+    }
+
+    const families = await familiesQuery.orderBy("created_at", "desc");
+
+    const familyIds = families.map((family) => family.id);
+
+    let housing = [];
+    let wives = [];
+    let children = [];
+    let marriedDaughters = [];
+    let specialCases = [];
+
+    if (familyIds.length > 0) {
+      [housing, wives, children, marriedDaughters, specialCases] =
+        await Promise.all([
+          db("family_housing")
+            .whereIn("family_id", familyIds)
+            .select(
+              "id",
+              "family_id",
+              "previous_area",
+              "current_housing_type",
+              "displacement_type",
+              "current_address",
+            ),
+
+          db("wives")
+            .whereIn("family_id", familyIds)
+            .select(
+              "id",
+              "family_id",
+              "full_name",
+              "national_id",
+              db.raw("DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth"),
+              "phone",
+              "previous_family_name",
+              "employment_status",
+            ),
+
+          db("children")
+            .whereIn("family_id", familyIds)
+            .select(
+              "id",
+              "family_id",
+              "full_name",
+              "national_id",
+              db.raw("DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth"),
+              "education_status",
+              "institution_name",
+            ),
+
+          db("married_daughters")
+            .whereIn("family_id", familyIds)
+            .select(
+              "id",
+              "family_id",
+              "full_name",
+              "national_id",
+              "phone",
+              "husband_full_name",
+              "husband_phone",
+            ),
+
+          db("special_cases")
+            .whereIn("family_id", familyIds)
+            .select(
+              "id",
+              "family_id",
+              "full_name",
+              "national_id",
+              db.raw("DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth"),
+              "relationship",
+              "case_type",
+              "case_details",
+            ),
+        ]);
+    }
+
+    const workbook = new ExcelJS.Workbook();
+
+    workbook.creator = "Salman Family Registry";
+    workbook.created = new Date();
+
+    const addWorksheet = (name, columns, rows) => {
+      const worksheet = workbook.addWorksheet(name, {
+        views: [{ rightToLeft: true }],
+      });
+
+      worksheet.columns = columns;
+
+      worksheet.getRow(1).font = {
+        bold: true,
+      };
+
+      worksheet.getRow(1).alignment = {
+        horizontal: "center",
+        vertical: "middle",
+      };
+
+      worksheet.autoFilter = {
+        from: {
+          row: 1,
+          column: 1,
+        },
+        to: {
+          row: 1,
+          column: columns.length,
+        },
+      };
+
+      rows.forEach((row) => {
+        worksheet.addRow(row);
+      });
+
+      worksheet.eachRow((row) => {
+        row.alignment = {
+          vertical: "middle",
+          horizontal: "right",
+        };
+      });
+
+      return worksheet;
+    };
+
+    addWorksheet(
+      "الأسر",
+      [
+        { header: "رقم الأسرة", key: "id", width: 12 },
+        { header: "اسم رب الأسرة", key: "full_name", width: 28 },
+        { header: "رقم الهوية", key: "national_id", width: 16 },
+        { header: "تاريخ الميلاد", key: "date_of_birth", width: 16 },
+        { header: "رقم الهاتف", key: "phone", width: 18 },
+        { header: "فصيلة الدم", key: "blood_type", width: 14 },
+        { header: "الحالة الاجتماعية", key: "marital_status", width: 18 },
+        { header: "فئة الدخل", key: "income_category", width: 16 },
+        { header: "حالة العمل", key: "work_status", width: 16 },
+        { header: "نوع الوظيفة", key: "job_type", width: 18 },
+        { header: "وظيفة أخرى", key: "other_job_type", width: 22 },
+        { header: "حالة النموذج", key: "form_status", width: 16 },
+        { header: "التعديل مفتوح", key: "editing_enabled", width: 16 },
+        { header: "تاريخ التسليم", key: "submitted_at", width: 22 },
+        { header: "تاريخ التسجيل", key: "created_at", width: 22 },
+      ],
+      families.map((family) => ({
+        ...family,
+        editing_enabled: family.editing_enabled ? "نعم" : "لا",
+      })),
+    );
+
+    addWorksheet(
+      "السكن",
+      [
+        { header: "رقم السجل", key: "id", width: 12 },
+        { header: "رقم الأسرة", key: "family_id", width: 12 },
+        { header: "المنطقة السابقة", key: "previous_area", width: 20 },
+        {
+          header: "نوع السكن الحالي",
+          key: "current_housing_type",
+          width: 20,
+        },
+        { header: "نوع النزوح", key: "displacement_type", width: 20 },
+        { header: "العنوان الحالي", key: "current_address", width: 35 },
+      ],
+      housing,
+    );
+
+    addWorksheet(
+      "الزوجات",
+      [
+        { header: "رقم الزوجة", key: "id", width: 12 },
+        { header: "رقم الأسرة", key: "family_id", width: 12 },
+        { header: "الاسم الكامل", key: "full_name", width: 28 },
+        { header: "رقم الهوية", key: "national_id", width: 16 },
+        { header: "تاريخ الميلاد", key: "date_of_birth", width: 16 },
+        { header: "رقم الهاتف", key: "phone", width: 18 },
+        {
+          header: "اسم العائلة السابقة",
+          key: "previous_family_name",
+          width: 25,
+        },
+        {
+          header: "حالة العمل",
+          key: "employment_status",
+          width: 22,
+        },
+      ],
+      wives,
+    );
+
+    addWorksheet(
+      "الأبناء",
+      [
+        { header: "رقم الابن", key: "id", width: 12 },
+        { header: "رقم الأسرة", key: "family_id", width: 12 },
+        { header: "الاسم الكامل", key: "full_name", width: 28 },
+        { header: "رقم الهوية", key: "national_id", width: 16 },
+        { header: "تاريخ الميلاد", key: "date_of_birth", width: 16 },
+        {
+          header: "الحالة التعليمية",
+          key: "education_status",
+          width: 20,
+        },
+        {
+          header: "المؤسسة التعليمية",
+          key: "institution_name",
+          width: 30,
+        },
+      ],
+      children,
+    );
+
+    addWorksheet(
+      "البنات المتزوجات",
+      [
+        { header: "رقم السجل", key: "id", width: 12 },
+        { header: "رقم الأسرة", key: "family_id", width: 12 },
+        { header: "اسم البنت", key: "full_name", width: 28 },
+        { header: "رقم الهوية", key: "national_id", width: 16 },
+        { header: "رقم الهاتف", key: "phone", width: 18 },
+        { header: "اسم الزوج", key: "husband_full_name", width: 28 },
+        { header: "هاتف الزوج", key: "husband_phone", width: 18 },
+      ],
+      marriedDaughters,
+    );
+
+    addWorksheet(
+      "الحالات الخاصة",
+      [
+        { header: "رقم الحالة", key: "id", width: 12 },
+        { header: "رقم الأسرة", key: "family_id", width: 12 },
+        { header: "الاسم الكامل", key: "full_name", width: 28 },
+        { header: "رقم الهوية", key: "national_id", width: 16 },
+        { header: "تاريخ الميلاد", key: "date_of_birth", width: 16 },
+        { header: "صلة القرابة", key: "relationship", width: 18 },
+        { header: "نوع الحالة", key: "case_type", width: 18 },
+        { header: "تفاصيل الحالة", key: "case_details", width: 45 },
+      ],
+      specialCases,
+    );
+
+    const fileName = `salman-families-${new Date()
+      .toISOString()
+      .slice(0, 10)}.xlsx`;
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+
+    res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+
+    await workbook.xlsx.write(res);
+
+    return res.end();
+  } catch (error) {
+    console.error("Export families Excel error:", error);
+
+    return res.status(500).json({
+      message: "حدث خطأ أثناء تصدير بيانات الأسر.",
+    });
+  }
+};
 module.exports = {
   getDashboardStats,
   getFamilies,
@@ -907,4 +1221,5 @@ module.exports = {
   restoreFamily,
   updateFamilyEditingStatus,
   updateFamilyFormStatus,
+  exportFamiliesExcel,
 };

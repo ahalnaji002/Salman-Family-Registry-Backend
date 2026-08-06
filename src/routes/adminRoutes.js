@@ -10,6 +10,7 @@ const {
   restoreFamily,
   updateFamilyEditingStatus,
   updateFamilyFormStatus,
+  exportFamiliesExcel,
 } = require("../controllers/adminController");
 
 const { authenticate } = require("../middlewares/authMiddleware");
@@ -30,5 +31,6 @@ router.patch("/families/:familyId", updateFamily);
 router.delete("/families/:familyId", deleteFamily);
 router.patch("/families/:familyId/editing", updateFamilyEditingStatus);
 router.patch("/families/:familyId/status", updateFamilyFormStatus);
+router.get("/export/families", exportFamiliesExcel);
 
 module.exports = router;

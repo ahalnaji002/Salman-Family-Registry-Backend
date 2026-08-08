@@ -4,102 +4,59 @@ const crypto = require("crypto");
 const db = require("../config/database");
 
 const register = async (req, res) => {
-  const {
-    full_name,
-    national_id,
-    phone,
-    password,
-    date_of_birth,
-    blood_type,
-    marital_status,
-    income_category,
-    work_status,
-    job_type,
-    other_job_type,
-  } = req.body;
+  const { full_name, national_id, phone, password } = req.body;
 
-  if (
-    !full_name ||
-    !national_id ||
-    !phone ||
-    !password ||
-    !date_of_birth ||
-    !marital_status ||
-    !income_category ||
-    !work_status
-  ) {
+  if (!full_name || !national_id || !phone || !password) {
     return res.status(400).json({
       message: "يرجى تعبئة جميع الحقول المطلوبة.",
     });
   }
 
-  if (!/^\d{9}$/.test(national_id)) {
+  const normalizedFullName = String(full_name).trim();
+  const normalizedNationalId = String(national_id).trim();
+  const normalizedPhone = String(phone).trim();
+
+  if (!normalizedFullName) {
+    return res.status(400).json({
+      message: "الاسم الرباعي مطلوب.",
+    });
+  }
+
+  if (!/^\d{9}$/.test(normalizedNationalId)) {
     return res.status(400).json({
       message: "رقم الهوية يجب أن يتكون من 9 أرقام.",
     });
   }
 
-  if (password.length < 8) {
+  if (!normalizedPhone) {
+    return res.status(400).json({
+      message: "رقم الجوال مطلوب.",
+    });
+  }
+
+  if (String(password).length < 8) {
     return res.status(400).json({
       message: "كلمة المرور يجب ألا تقل عن 8 أحرف.",
     });
   }
 
-  const allowedMaritalStatuses = ["single", "married", "divorced", "widowed"];
-
-  const allowedIncomeCategories = ["0-1000", "1000-3000", "3000+"];
-
-  const allowedWorkStatuses = ["employee", "worker", "not_working"];
-
-  const allowedJobTypes = ["government", "private", "other"];
-
-  if (!allowedMaritalStatuses.includes(marital_status)) {
-    return res.status(400).json({
-      message: "الحالة الاجتماعية غير صحيحة.",
-    });
-  }
-
-  if (!allowedIncomeCategories.includes(income_category)) {
-    return res.status(400).json({
-      message: "فئة الدخل غير صحيحة.",
-    });
-  }
-
-  if (!allowedWorkStatuses.includes(work_status)) {
-    return res.status(400).json({
-      message: "حالة العمل غير صحيحة.",
-    });
-  }
-
-  if (job_type && !allowedJobTypes.includes(job_type)) {
-    return res.status(400).json({
-      message: "نوع الوظيفة غير صحيح.",
-    });
-  }
-
-  if (job_type === "other" && !other_job_type) {
-    return res.status(400).json({
-      message: "يرجى توضيح نوع الوظيفة الأخرى.",
-    });
-  }
-
-  if (job_type !== "other" && other_job_type) {
-    return res.status(400).json({
-      message: "لا يمكن إضافة نوع وظيفة آخر إلا عند اختيار other.",
-    });
-  }
-
   try {
-    const existingUser = await db("users").where({ national_id }).first();
+    const existingUserByNationalId = await db("users")
+      .where({
+        national_id: normalizedNationalId,
+      })
+      .first();
 
-    if (existingUser) {
+    if (existingUserByNationalId) {
       return res.status(409).json({
         message: "رقم الهوية مسجل مسبقًا.",
       });
     }
 
     const familyHeadRole = await db("roles")
-      .where({ name: "family_head" })
+      .where({
+        name: "family_head",
+      })
       .first();
 
     if (!familyHeadRole) {
@@ -112,9 +69,9 @@ const register = async (req, res) => {
 
     const result = await db.transaction(async (trx) => {
       const [userId] = await trx("users").insert({
-        full_name,
-        national_id,
-        phone,
+        full_name: normalizedFullName,
+        national_id: normalizedNationalId,
+        phone: normalizedPhone,
         password_hash: passwordHash,
         is_active: true,
       });
@@ -128,18 +85,20 @@ const register = async (req, res) => {
 
       const [familyId] = await trx("families").insert({
         user_id: userId,
-        full_name,
-        national_id,
-        date_of_birth,
-        phone,
-        blood_type: blood_type || null,
-        marital_status,
-        income_category,
-        work_status,
-        job_type: job_type || null,
-        other_job_type: job_type === "other" ? other_job_type : null,
+        full_name: normalizedFullName,
+        national_id: normalizedNationalId,
+        date_of_birth: null,
+        phone: normalizedPhone,
+        blood_type: null,
+        marital_status: null,
+        income_category: null,
+        work_status: null,
+        job_type: null,
+        other_job_type: null,
+        personal_photo_path: null,
         form_status: "draft",
         editing_enabled: true,
+        submitted_at: null,
         created_by: userId,
         updated_by: userId,
       });
@@ -166,20 +125,27 @@ const register = async (req, res) => {
       data: {
         user: {
           id: result.userId,
-          full_name,
-          national_id,
-          phone,
+          full_name: normalizedFullName,
+          national_id: normalizedNationalId,
+          phone: normalizedPhone,
           role: "family_head",
         },
         family: {
           id: result.familyId,
           form_status: "draft",
+          editing_enabled: true,
         },
         token,
       },
     });
   } catch (error) {
     console.error("Register error:", error);
+
+    if (error.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({
+        message: "رقم الهوية أو رقم الجوال مسجل مسبقًا.",
+      });
+    }
 
     return res.status(500).json({
       message: "حدث خطأ أثناء إنشاء الحساب.",

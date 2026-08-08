@@ -387,6 +387,8 @@ const createFamily = async (req, res) => {
   }
 
   const normalizedNationalId = String(national_id).trim();
+  const normalizedPhone = String(phone).trim();
+  const normalizedFullName = String(full_name).trim();
 
   if (!/^\d{9}$/.test(normalizedNationalId)) {
     return res.status(400).json({
@@ -394,7 +396,7 @@ const createFamily = async (req, res) => {
     });
   }
 
-  if (password.length < 8) {
+  if (String(password).length < 8) {
     return res.status(400).json({
       message: "كلمة المرور يجب ألا تقل عن 8 أحرف.",
     });
@@ -426,17 +428,34 @@ const createFamily = async (req, res) => {
     });
   }
 
-  if (job_type && !allowedJobTypes.includes(job_type)) {
-    return res.status(400).json({
-      message: "نوع الوظيفة غير صحيح.",
-    });
+  // نوع الوظيفة مطلوب فقط للموظف
+  if (work_status === "employee") {
+    if (!job_type) {
+      return res.status(400).json({
+        message: "نوع الوظيفة مطلوب عند اختيار موظف.",
+      });
+    }
+
+    if (!allowedJobTypes.includes(job_type)) {
+      return res.status(400).json({
+        message: "نوع الوظيفة غير صحيح.",
+      });
+    }
+
+    if (job_type === "other" && !String(other_job_type || "").trim()) {
+      return res.status(400).json({
+        message: "يرجى توضيح نوع الوظيفة الأخرى.",
+      });
+    }
   }
 
-  if (job_type === "other" && !other_job_type) {
-    return res.status(400).json({
-      message: "يرجى توضيح نوع الوظيفة الأخرى.",
-    });
-  }
+  // القيم النهائية التي ستُحفظ
+  const finalJobType = work_status === "employee" ? job_type : null;
+
+  const finalOtherJobType =
+    work_status === "employee" && job_type === "other"
+      ? String(other_job_type).trim()
+      : null;
 
   try {
     const existingUser = await db("users")
@@ -475,9 +494,9 @@ const createFamily = async (req, res) => {
 
     const result = await db.transaction(async (trx) => {
       const [userId] = await trx("users").insert({
-        full_name: full_name.trim(),
+        full_name: normalizedFullName,
         national_id: normalizedNationalId,
-        phone: phone.trim(),
+        phone: normalizedPhone,
         password_hash: passwordHash,
         is_active: true,
       });
@@ -491,16 +510,18 @@ const createFamily = async (req, res) => {
 
       const [familyId] = await trx("families").insert({
         user_id: userId,
-        full_name: full_name.trim(),
+        full_name: normalizedFullName,
         national_id: normalizedNationalId,
         date_of_birth,
-        phone: phone.trim(),
+        phone: normalizedPhone,
         blood_type: blood_type || null,
         marital_status,
         income_category,
         work_status,
-        job_type: job_type || null,
-        other_job_type: job_type === "other" ? other_job_type : null,
+
+        job_type: finalJobType,
+        other_job_type: finalOtherJobType,
+
         form_status: "draft",
 
         // للتوافق مع النظام القديم
@@ -524,9 +545,9 @@ const createFamily = async (req, res) => {
       data: {
         user: {
           id: result.userId,
-          full_name: full_name.trim(),
+          full_name: normalizedFullName,
           national_id: normalizedNationalId,
-          phone: phone.trim(),
+          phone: normalizedPhone,
           roles: ["family_head"],
         },
         family: {
@@ -645,10 +666,15 @@ const updateFamily = async (req, res) => {
     const finalWorkStatus =
       work_status !== undefined ? work_status : family.work_status;
 
-    const finalJobType = job_type !== undefined ? job_type : family.job_type;
+    let finalJobType = job_type !== undefined ? job_type : family.job_type;
 
-    const finalOtherJobType =
+    let finalOtherJobType =
       other_job_type !== undefined ? other_job_type : family.other_job_type;
+
+    if (finalWorkStatus !== "employee") {
+      finalJobType = null;
+      finalOtherJobType = null;
+    }
 
     if (finalWorkStatus === "employee" && !finalJobType) {
       return res.status(400).json({
@@ -656,18 +682,24 @@ const updateFamily = async (req, res) => {
       });
     }
 
-    if (finalJobType === "other" && !finalOtherJobType) {
+    if (finalWorkStatus === "employee" && finalJobType !== "other") {
+      finalOtherJobType = null;
+    }
+
+    if (
+      finalWorkStatus === "employee" &&
+      finalJobType === "other" &&
+      !String(finalOtherJobType || "").trim()
+    ) {
       return res.status(400).json({
         message: "يرجى توضيح نوع الوظيفة الأخرى.",
       });
     }
 
-    // فحص الهوية على مستوى النظام كامل
     if (
       normalizedNationalId !== undefined &&
       normalizedNationalId !== String(family.national_id)
     ) {
-      // فحص users مع استثناء المستخدم المرتبط بنفس الأسرة
       let userQuery = db("users").where({
         national_id: normalizedNationalId,
       });
@@ -686,8 +718,6 @@ const updateFamily = async (req, res) => {
         });
       }
 
-      // فحص families / wives / children / married_daughters
-      // مع استثناء نفس سجل الأسرة
       const duplicateNationalId = await checkNationalIdGlobally({
         nationalId: normalizedNationalId,
         excludeTable: "families",
@@ -699,6 +729,25 @@ const updateFamily = async (req, res) => {
           message: `رقم الهوية مسجل مسبقًا في النظام كـ ${duplicateNationalId.label}.`,
         });
       }
+    }
+
+    const hasRequestedUpdate = [
+      full_name,
+      national_id,
+      phone,
+      date_of_birth,
+      blood_type,
+      marital_status,
+      income_category,
+      work_status,
+      job_type,
+      other_job_type,
+    ].some((value) => value !== undefined);
+
+    if (!hasRequestedUpdate) {
+      return res.status(400).json({
+        message: "لم يتم إرسال أي بيانات للتعديل.",
+      });
     }
 
     const familyUpdates = {
@@ -738,28 +787,14 @@ const updateFamily = async (req, res) => {
       familyUpdates.work_status = work_status;
     }
 
-    if (job_type !== undefined) {
-      familyUpdates.job_type = job_type;
-    }
-
-    if (other_job_type !== undefined) {
-      familyUpdates.other_job_type =
-        typeof other_job_type === "string"
-          ? other_job_type.trim()
-          : other_job_type;
-    }
-
-    if (work_status !== undefined && work_status !== "employee") {
+    if (finalWorkStatus !== "employee") {
       familyUpdates.job_type = null;
       familyUpdates.other_job_type = null;
-    } else if (job_type !== undefined && job_type !== "other") {
-      familyUpdates.other_job_type = null;
-    }
+    } else {
+      familyUpdates.job_type = finalJobType;
 
-    if (Object.keys(familyUpdates).length === 2) {
-      return res.status(400).json({
-        message: "لم يتم إرسال أي بيانات للتعديل.",
-      });
+      familyUpdates.other_job_type =
+        finalJobType === "other" ? String(finalOtherJobType).trim() : null;
     }
 
     await db.transaction(async (trx) => {

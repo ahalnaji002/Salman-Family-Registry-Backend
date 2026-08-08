@@ -315,18 +315,35 @@ const updateMyFamily = async (req, res) => {
     const finalWorkStatus =
       work_status !== undefined ? work_status : family.work_status;
 
-    const finalJobType = job_type !== undefined ? job_type : family.job_type;
+    let finalJobType = job_type !== undefined ? job_type : family.job_type;
 
-    const finalOtherJobType =
+    let finalOtherJobType =
       other_job_type !== undefined ? other_job_type : family.other_job_type;
 
+    // إذا لم يكن موظفًا، فلا يوجد نوع وظيفة
+    if (finalWorkStatus !== "employee") {
+      finalJobType = null;
+      finalOtherJobType = null;
+    }
+
+    // الموظف يجب أن يملك نوع وظيفة
     if (finalWorkStatus === "employee" && !finalJobType) {
       return res.status(400).json({
         message: "نوع الوظيفة مطلوب عند اختيار موظف.",
       });
     }
 
-    if (finalJobType === "other" && !finalOtherJobType) {
+    // إذا كان نوع الوظيفة غير "أخرى"، نمسح التوضيح القديم
+    if (finalWorkStatus === "employee" && finalJobType !== "other") {
+      finalOtherJobType = null;
+    }
+
+    // إذا كانت الوظيفة "أخرى" فالتوضيح مطلوب
+    if (
+      finalWorkStatus === "employee" &&
+      finalJobType === "other" &&
+      !String(finalOtherJobType || "").trim()
+    ) {
       return res.status(400).json({
         message: "يرجى توضيح نوع الوظيفة الأخرى.",
       });
@@ -402,25 +419,37 @@ const updateMyFamily = async (req, res) => {
       familyUpdates.work_status = work_status;
     }
 
-    if (job_type !== undefined) {
-      familyUpdates.job_type = job_type;
-    }
-
-    if (other_job_type !== undefined) {
-      familyUpdates.other_job_type =
-        typeof other_job_type === "string"
-          ? other_job_type.trim()
-          : other_job_type;
-    }
-
-    if (work_status !== undefined && work_status !== "employee") {
+    /*
+     * نحفظ القيم النهائية بدل الاعتماد فقط
+     * على الحقول التي وصلت في الطلب.
+     *
+     * هذا ينظف أيضًا البيانات القديمة غير المتوافقة.
+     */
+    if (finalWorkStatus !== "employee") {
       familyUpdates.job_type = null;
       familyUpdates.other_job_type = null;
-    } else if (job_type !== undefined && job_type !== "other") {
-      familyUpdates.other_job_type = null;
+    } else {
+      familyUpdates.job_type = finalJobType;
+
+      familyUpdates.other_job_type =
+        finalJobType === "other" ? String(finalOtherJobType).trim() : null;
     }
 
-    if (Object.keys(familyUpdates).length === 2) {
+    // هل المستخدم أرسل أصلًا أي بيانات للتعديل؟
+    const hasRequestedUpdate = [
+      full_name,
+      national_id,
+      phone,
+      date_of_birth,
+      blood_type,
+      marital_status,
+      income_category,
+      work_status,
+      job_type,
+      other_job_type,
+    ].some((value) => value !== undefined);
+
+    if (!hasRequestedUpdate) {
       return res.status(400).json({
         message: "لم يتم إرسال أي بيانات للتعديل.",
       });
@@ -478,11 +507,14 @@ const updateMyFamily = async (req, res) => {
       data: {
         family: {
           ...updatedFamily,
+
           editing_enabled: Boolean(updatedFamily.editing_enabled),
+
           editing_override:
             updatedFamily.editing_override === null
               ? null
               : Boolean(updatedFamily.editing_override),
+
           can_edit: editingPermission.canEdit,
         },
       },
@@ -2724,7 +2756,9 @@ const createMySpecialCase = async (req, res) => {
       });
     }
 
-    if (!/^\d{9}$/.test(String(national_id))) {
+    const normalizedNationalId = String(national_id).trim();
+
+    if (!/^\d{9}$/.test(normalizedNationalId)) {
       return res.status(400).json({
         message: "رقم الهوية يجب أن يتكون من 9 أرقام.",
       });
@@ -2744,10 +2778,25 @@ const createMySpecialCase = async (req, res) => {
       });
     }
 
+    // الشهيد يعتبر شخصًا مستقلًا، لذلك هويته يجب ألا تكون
+    // مستخدمة في أي شخص أساسي داخل النظام
+    if (case_type === "martyr") {
+      const duplicateNationalId = await checkNationalIdGlobally({
+        nationalId: normalizedNationalId,
+      });
+
+      if (duplicateNationalId.exists) {
+        return res.status(409).json({
+          message: `رقم الهوية مسجل مسبقًا في النظام كـ ${duplicateNationalId.label}.`,
+        });
+      }
+    }
+
+    // منع تكرار نفس الحالة لنفس الشخص داخل الأسرة
     const existingCase = await db("special_cases")
       .where({
         family_id: family.id,
-        national_id: String(national_id),
+        national_id: normalizedNationalId,
         case_type,
       })
       .first();
@@ -2761,7 +2810,7 @@ const createMySpecialCase = async (req, res) => {
     const [specialCaseId] = await db("special_cases").insert({
       family_id: family.id,
       full_name: full_name.trim(),
-      national_id: String(national_id),
+      national_id: normalizedNationalId,
       date_of_birth,
       relationship: relationship.trim(),
       case_type,
@@ -2913,7 +2962,12 @@ const updateMySpecialCase = async (req, res) => {
       case_details,
     } = req.body;
 
-    if (national_id !== undefined && !/^\d{9}$/.test(String(national_id))) {
+    const normalizedNationalId =
+      national_id !== undefined
+        ? String(national_id).trim()
+        : String(specialCase.national_id);
+
+    if (national_id !== undefined && !/^\d{9}$/.test(normalizedNationalId)) {
       return res.status(400).json({
         message: "رقم الهوية يجب أن يتكون من 9 أرقام.",
       });
@@ -2933,16 +2987,28 @@ const updateMySpecialCase = async (req, res) => {
       });
     }
 
-    const finalNationalId =
-      national_id !== undefined ? String(national_id) : specialCase.national_id;
-
     const finalCaseType =
       case_type !== undefined ? case_type : specialCase.case_type;
 
+    // إذا أصبحت الحالة شهيدًا، يجب أن تكون الهوية
+    // غير مستخدمة لأي شخص أساسي في النظام
+    if (finalCaseType === "martyr") {
+      const duplicateNationalId = await checkNationalIdGlobally({
+        nationalId: normalizedNationalId,
+      });
+
+      if (duplicateNationalId.exists) {
+        return res.status(409).json({
+          message: `رقم الهوية مسجل مسبقًا في النظام كـ ${duplicateNationalId.label}.`,
+        });
+      }
+    }
+
+    // منع تكرار نفس الحالة لنفس الشخص داخل الأسرة
     const duplicateCase = await db("special_cases")
       .where({
         family_id: family.id,
-        national_id: finalNationalId,
+        national_id: normalizedNationalId,
         case_type: finalCaseType,
       })
       .whereNot({ id: caseId })
@@ -2961,7 +3027,7 @@ const updateMySpecialCase = async (req, res) => {
     }
 
     if (national_id !== undefined) {
-      updates.national_id = String(national_id);
+      updates.national_id = normalizedNationalId;
     }
 
     if (date_of_birth !== undefined) {

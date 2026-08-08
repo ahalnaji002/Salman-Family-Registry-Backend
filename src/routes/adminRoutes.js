@@ -26,6 +26,10 @@ const {
   openGlobalEditing,
   closeGlobalEditing,
 
+  // Backups
+  createBackup,
+  getLatestBackup,
+
   // Supervisors
   assignSupervisor,
   getSupervisors,
@@ -69,6 +73,10 @@ router.patch("/settings/registration/close", closeRegistration);
 router.patch("/settings/editing/open", openGlobalEditing);
 router.patch("/settings/editing/close", closeGlobalEditing);
 
+// Backups
+router.post("/backups", createBackup);
+router.get("/backups/latest", getLatestBackup);
+
 // Supervisors
 router.post("/supervisors", assignSupervisor);
 router.get("/supervisors", getSupervisors);
@@ -76,7 +84,6 @@ router.get("/supervisors/:supervisorId", getSupervisor);
 router.patch("/supervisors/:supervisorId", updateSupervisor);
 router.patch("/supervisors/:supervisorId/status", toggleSupervisorStatus);
 router.delete("/supervisors/:supervisorId", deleteSupervisor);
-
 router.put(
   "/supervisors/:supervisorId/permissions",
   updateSupervisorPermissions,

@@ -2,6 +2,26 @@ const db = require("../config/database");
 const bcrypt = require("bcryptjs");
 const ExcelJS = require("exceljs");
 
+const fs = require("fs");
+const path = require("path");
+const { spawn } = require("child_process");
+
+const BACKUPS_DIR = path.join(process.cwd(), "backups");
+
+const ensureBackupsDirectory = async () => {
+  await fs.promises.mkdir(BACKUPS_DIR, {
+    recursive: true,
+  });
+};
+
+const getBackupDatabaseConfig = () => ({
+  host: process.env.DB_HOST,
+  port: process.env.DB_PORT || "3306",
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME || process.env.DB_DATABASE,
+});
+
 // Helper
 const getFamilyEditingPermission = async (family) => {
   if (!family) {
@@ -2153,6 +2173,200 @@ const closeGlobalEditing = async (req, res) => {
     });
   }
 };
+
+// Backups
+
+// =========================
+// Admin Backups
+// =========================
+
+const createBackup = async (req, res) => {
+  try {
+    const { host, port, user, password, database } = getBackupDatabaseConfig();
+
+    if (!host || !user || !database) {
+      return res.status(500).json({
+        message: "إعدادات قاعدة البيانات غير مكتملة لإنشاء النسخة الاحتياطية.",
+      });
+    }
+
+    await ensureBackupsDirectory();
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+
+    const fileName = `backup-${timestamp}.sql`;
+    const filePath = path.join(BACKUPS_DIR, fileName);
+
+    const mysqldumpCommand = process.env.MYSQLDUMP_PATH || "mysqldump";
+
+    const args = [
+      "--host",
+      host,
+      "--port",
+      String(port),
+      "--user",
+      user,
+      "--single-transaction",
+      "--quick",
+      "--routines",
+      "--triggers",
+      "--events",
+      "--no-tablespaces",
+      "--default-character-set=utf8mb4",
+      database,
+    ];
+
+    const backupStream = fs.createWriteStream(filePath);
+
+    const dumpProcess = spawn(mysqldumpCommand, args, {
+      env: {
+        ...process.env,
+        ...(password ? { MYSQL_PWD: password } : {}),
+      },
+    });
+
+    let errorOutput = "";
+    let processFailed = false;
+
+    dumpProcess.stderr.on("data", (chunk) => {
+      errorOutput += chunk.toString();
+    });
+
+    dumpProcess.on("error", async (error) => {
+      processFailed = true;
+
+      console.error("Backup process error:", error);
+
+      backupStream.destroy();
+
+      await fs.promises.unlink(filePath).catch(() => {});
+
+      if (!res.headersSent) {
+        return res.status(500).json({
+          message: "تعذر تشغيل أداة mysqldump.",
+        });
+      }
+    });
+
+    backupStream.on("finish", async () => {
+      if (processFailed) {
+        return;
+      }
+
+      try {
+        const stats = await fs.promises.stat(filePath);
+
+        return res.status(201).json({
+          message: "تم إنشاء النسخة الاحتياطية بنجاح.",
+          data: {
+            file_name: fileName,
+            created_at: stats.mtime.toISOString(),
+            size_bytes: stats.size,
+          },
+        });
+      } catch (error) {
+        console.error("Backup stats error:", error);
+
+        if (!res.headersSent) {
+          return res.status(500).json({
+            message: "تم إنشاء النسخة ولكن تعذر قراءة معلوماتها.",
+          });
+        }
+      }
+    });
+
+    dumpProcess.on("close", async (code) => {
+      if (processFailed) {
+        return;
+      }
+
+      if (code !== 0) {
+        processFailed = true;
+
+        console.error("mysqldump error:", errorOutput);
+
+        backupStream.destroy();
+
+        await fs.promises.unlink(filePath).catch(() => {});
+
+        if (!res.headersSent) {
+          return res.status(500).json({
+            message: "فشل إنشاء النسخة الاحتياطية.",
+            error:
+              process.env.NODE_ENV === "development"
+                ? errorOutput.trim()
+                : undefined,
+          });
+        }
+      }
+    });
+
+    dumpProcess.stdout.pipe(backupStream);
+  } catch (error) {
+    console.error("Create backup error:", error);
+
+    return res.status(500).json({
+      message: "حدث خطأ أثناء إنشاء النسخة الاحتياطية.",
+    });
+  }
+};
+const getLatestBackup = async (req, res) => {
+  try {
+    await ensureBackupsDirectory();
+
+    const files = await fs.promises.readdir(BACKUPS_DIR);
+
+    const backupFiles = files.filter(
+      (file) => file.startsWith("backup-") && file.endsWith(".sql"),
+    );
+
+    if (backupFiles.length === 0) {
+      return res.status(200).json({
+        message: "لا توجد نسخ احتياطية حتى الآن.",
+
+        data: {
+          backup: null,
+        },
+      });
+    }
+
+    const backups = await Promise.all(
+      backupFiles.map(async (fileName) => {
+        const filePath = path.join(BACKUPS_DIR, fileName);
+
+        const stats = await fs.promises.stat(filePath);
+
+        return {
+          file_name: fileName,
+          created_at: stats.mtime.toISOString(),
+          size_bytes: stats.size,
+          modified_time: stats.mtime.getTime(),
+        };
+      }),
+    );
+
+    backups.sort((a, b) => b.modified_time - a.modified_time);
+
+    const latestBackup = backups[0];
+
+    delete latestBackup.modified_time;
+
+    return res.status(200).json({
+      message: "تم جلب آخر نسخة احتياطية بنجاح.",
+
+      data: {
+        backup: latestBackup,
+      },
+    });
+  } catch (error) {
+    console.error("Get latest backup error:", error);
+
+    return res.status(500).json({
+      message: "حدث خطأ أثناء جلب آخر نسخة احتياطية.",
+    });
+  }
+};
+
 // Supervisors
 const assignSupervisor = async (req, res) => {
   try {
@@ -2260,7 +2474,6 @@ const assignSupervisor = async (req, res) => {
     });
   }
 };
-
 const getSupervisors = async (req, res) => {
   try {
     const supervisors = await db("users")
@@ -2305,7 +2518,6 @@ const getSupervisors = async (req, res) => {
     });
   }
 };
-
 const getSupervisor = async (req, res) => {
   try {
     const supervisorId = Number(req.params.supervisorId);
@@ -2402,7 +2614,6 @@ const getSupervisor = async (req, res) => {
     });
   }
 };
-
 const updateSupervisor = async (req, res) => {
   try {
     const supervisorId = Number(req.params.supervisorId);
@@ -2508,7 +2719,6 @@ const updateSupervisor = async (req, res) => {
     });
   }
 };
-
 const toggleSupervisorStatus = async (req, res) => {
   try {
     const supervisorId = Number(req.params.supervisorId);
@@ -2579,7 +2789,6 @@ const toggleSupervisorStatus = async (req, res) => {
     });
   }
 };
-
 const deleteSupervisor = async (req, res) => {
   try {
     const supervisorId = Number(req.params.supervisorId);
@@ -2637,7 +2846,6 @@ const deleteSupervisor = async (req, res) => {
     });
   }
 };
-
 const updateSupervisorPermissions = async (req, res) => {
   const trx = await db.transaction();
 
@@ -2911,6 +3119,10 @@ module.exports = {
   closeRegistration,
   openGlobalEditing,
   closeGlobalEditing,
+
+  // Backups
+  createBackup,
+  getLatestBackup,
 
   // Supervisors
   assignSupervisor,

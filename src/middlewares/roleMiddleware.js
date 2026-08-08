@@ -6,7 +6,13 @@ const authorizeRoles = (...allowedRoles) => {
       });
     }
 
-    if (!allowedRoles.includes(req.user.role)) {
+    const userRoles = Array.isArray(req.user.roles) ? req.user.roles : [];
+
+    const hasAllowedRole = userRoles.some((role) =>
+      allowedRoles.includes(role),
+    );
+
+    if (!hasAllowedRole) {
       return res.status(403).json({
         message: "ليس لديك صلاحية للوصول إلى هذا المسار.",
       });

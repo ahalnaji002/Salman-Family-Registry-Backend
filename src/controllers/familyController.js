@@ -56,6 +56,60 @@ const getFamilyEditingPermission = async (family) => {
   };
 };
 
+const checkNationalIdGlobally = async ({
+  nationalId,
+  excludeTable = null,
+  excludeId = null,
+}) => {
+  const normalizedNationalId = String(nationalId);
+
+  const checks = [
+    {
+      table: "families",
+      label: "رب أسرة",
+    },
+    {
+      table: "wives",
+      label: "زوجة",
+    },
+    {
+      table: "children",
+      label: "ابن/ابنة",
+    },
+    {
+      table: "married_daughters",
+      label: "بنت متزوجة",
+    },
+  ];
+
+  for (const check of checks) {
+    let query = db(check.table).where({
+      national_id: normalizedNationalId,
+    });
+
+    if (excludeTable === check.table && excludeId !== null) {
+      query = query.whereNot({
+        id: excludeId,
+      });
+    }
+
+    const existing = await query.select("id").first();
+
+    if (existing) {
+      return {
+        exists: true,
+        table: check.table,
+        label: check.label,
+        id: existing.id,
+      };
+    }
+  }
+
+  return {
+    exists: false,
+  };
+};
+
 // FAMILY PROFILE
 const getMyFamily = async (req, res) => {
   try {
@@ -199,7 +253,13 @@ const updateMyFamily = async (req, res) => {
       other_job_type,
     } = req.body;
 
-    if (national_id !== undefined && !/^\d{9}$/.test(String(national_id))) {
+    const normalizedNationalId =
+      national_id !== undefined ? String(national_id).trim() : undefined;
+
+    if (
+      normalizedNationalId !== undefined &&
+      !/^\d{9}$/.test(normalizedNationalId)
+    ) {
       return res.status(400).json({
         message: "رقم الهوية يجب أن يتكون من 9 أرقام.",
       });
@@ -270,30 +330,35 @@ const updateMyFamily = async (req, res) => {
       });
     }
 
+    // فحص الهوية على مستوى النظام كامل
     if (
-      national_id !== undefined &&
-      String(national_id) !== String(family.national_id)
+      normalizedNationalId !== undefined &&
+      normalizedNationalId !== String(family.national_id)
     ) {
-      const duplicateFamily = await db("families")
-        .where({ national_id })
-        .whereNot({ id: family.id })
-        .whereNull("deleted_at")
-        .first();
-
-      if (duplicateFamily) {
-        return res.status(409).json({
-          message: "رقم الهوية مسجل لأسرة أخرى.",
-        });
-      }
-
       const duplicateUser = await db("users")
-        .where({ national_id })
-        .whereNot({ id: req.user.id })
+        .where({
+          national_id: normalizedNationalId,
+        })
+        .whereNot({
+          id: req.user.id,
+        })
         .first();
 
       if (duplicateUser) {
         return res.status(409).json({
-          message: "رقم الهوية مسجل لمستخدم آخر.",
+          message: "رقم الهوية مسجل مسبقًا لمستخدم آخر.",
+        });
+      }
+
+      const duplicateNationalId = await checkNationalIdGlobally({
+        nationalId: normalizedNationalId,
+        excludeTable: "families",
+        excludeId: family.id,
+      });
+
+      if (duplicateNationalId.exists) {
+        return res.status(409).json({
+          message: `رقم الهوية مسجل مسبقًا في النظام كـ ${duplicateNationalId.label}.`,
         });
       }
     }
@@ -303,24 +368,48 @@ const updateMyFamily = async (req, res) => {
       updated_at: db.fn.now(),
     };
 
-    const allowedFields = {
-      full_name,
-      national_id,
-      phone,
-      date_of_birth,
-      blood_type,
-      marital_status,
-      income_category,
-      work_status,
-      job_type,
-      other_job_type,
-    };
+    if (full_name !== undefined) {
+      familyUpdates.full_name = String(full_name).trim();
+    }
 
-    Object.entries(allowedFields).forEach(([key, value]) => {
-      if (value !== undefined) {
-        familyUpdates[key] = value;
-      }
-    });
+    if (normalizedNationalId !== undefined) {
+      familyUpdates.national_id = normalizedNationalId;
+    }
+
+    if (phone !== undefined) {
+      familyUpdates.phone = String(phone).trim();
+    }
+
+    if (date_of_birth !== undefined) {
+      familyUpdates.date_of_birth = date_of_birth;
+    }
+
+    if (blood_type !== undefined) {
+      familyUpdates.blood_type = blood_type;
+    }
+
+    if (marital_status !== undefined) {
+      familyUpdates.marital_status = marital_status;
+    }
+
+    if (income_category !== undefined) {
+      familyUpdates.income_category = income_category;
+    }
+
+    if (work_status !== undefined) {
+      familyUpdates.work_status = work_status;
+    }
+
+    if (job_type !== undefined) {
+      familyUpdates.job_type = job_type;
+    }
+
+    if (other_job_type !== undefined) {
+      familyUpdates.other_job_type =
+        typeof other_job_type === "string"
+          ? other_job_type.trim()
+          : other_job_type;
+    }
 
     if (work_status !== undefined && work_status !== "employee") {
       familyUpdates.job_type = null;
@@ -329,21 +418,27 @@ const updateMyFamily = async (req, res) => {
       familyUpdates.other_job_type = null;
     }
 
+    if (Object.keys(familyUpdates).length === 2) {
+      return res.status(400).json({
+        message: "لم يتم إرسال أي بيانات للتعديل.",
+      });
+    }
+
     await db.transaction(async (trx) => {
       await trx("families").where({ id: family.id }).update(familyUpdates);
 
       const userUpdates = {};
 
       if (full_name !== undefined) {
-        userUpdates.full_name = full_name;
+        userUpdates.full_name = String(full_name).trim();
       }
 
-      if (national_id !== undefined) {
-        userUpdates.national_id = national_id;
+      if (normalizedNationalId !== undefined) {
+        userUpdates.national_id = normalizedNationalId;
       }
 
       if (phone !== undefined) {
-        userUpdates.phone = phone;
+        userUpdates.phone = String(phone).trim();
       }
 
       if (Object.keys(userUpdates).length > 0) {
@@ -381,20 +476,23 @@ const updateMyFamily = async (req, res) => {
       data: {
         family: {
           ...updatedFamily,
-
           editing_enabled: Boolean(updatedFamily.editing_enabled),
-
           editing_override:
             updatedFamily.editing_override === null
               ? null
               : Boolean(updatedFamily.editing_override),
-
           can_edit: editingPermission.canEdit,
         },
       },
     });
   } catch (error) {
     console.error("Update my family error:", error);
+
+    if (error.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({
+        message: "رقم الهوية مسجل مسبقًا.",
+      });
+    }
 
     return res.status(500).json({
       message: "حدث خطأ أثناء تعديل بيانات الأسرة.",
@@ -1195,7 +1293,7 @@ const createMyWife = async (req, res) => {
     const family = await db("families")
       .where({ user_id: req.user.id })
       .whereNull("deleted_at")
-      .select("id", "marital_status", "form_status", "editing_override")
+      .select("id", "form_status", "editing_override")
       .first();
 
     if (!family) {
@@ -1209,12 +1307,6 @@ const createMyWife = async (req, res) => {
     if (!editingPermission.canEdit) {
       return res.status(403).json({
         message: editingPermission.reason,
-      });
-    }
-
-    if (family.marital_status !== "married") {
-      return res.status(400).json({
-        message: "لا يمكن إضافة زوجة إلا إذا كانت الحالة الاجتماعية متزوج.",
       });
     }
 
@@ -1246,23 +1338,20 @@ const createMyWife = async (req, res) => {
       });
     }
 
-    const existingWife = await db("wives")
-      .where({
-        family_id: family.id,
-        national_id,
-      })
-      .first();
+    const duplicateNationalId = await checkNationalIdGlobally({
+      nationalId: national_id,
+    });
 
-    if (existingWife) {
+    if (duplicateNationalId.exists) {
       return res.status(409).json({
-        message: "الزوجة مسجلة مسبقًا داخل هذه الأسرة.",
+        message: `رقم الهوية مسجل مسبقًا في الأسرة كـ ${duplicateNationalId.label}.`,
       });
     }
 
     const [wifeId] = await db("wives").insert({
       family_id: family.id,
       full_name: full_name.trim(),
-      national_id,
+      national_id: String(national_id),
       date_of_birth,
       phone: phone.trim(),
       previous_family_name: previous_family_name.trim(),
@@ -1467,17 +1556,15 @@ const updateMyWife = async (req, res) => {
       national_id !== undefined &&
       String(national_id) !== String(wife.national_id)
     ) {
-      const duplicateWife = await db("wives")
-        .where({
-          family_id: family.id,
-          national_id,
-        })
-        .whereNot({ id: wifeId })
-        .first();
+      const duplicateNationalId = await checkNationalIdGlobally({
+        nationalId: national_id,
+        excludeTable: "wives",
+        excludeId: wifeId,
+      });
 
-      if (duplicateWife) {
+      if (duplicateNationalId.exists) {
         return res.status(409).json({
-          message: "رقم الهوية مسجل لزوجة أخرى داخل هذه الأسرة.",
+          message: `رقم الهوية مسجل مسبقًا في الأسرة كـ ${duplicateNationalId.label}.`,
         });
       }
     }
@@ -1656,6 +1743,16 @@ const createMyChild = async (req, res) => {
       });
     }
 
+    const duplicateNationalId = await checkNationalIdGlobally({
+      nationalId: national_id,
+    });
+
+    if (duplicateNationalId.exists) {
+      return res.status(409).json({
+        message: `رقم الهوية مسجل مسبقًا في الأسرة كـ ${duplicateNationalId.label}.`,
+      });
+    }
+
     const allowedEducationStatuses = [
       "under_6",
       "school",
@@ -1678,23 +1775,10 @@ const createMyChild = async (req, res) => {
       });
     }
 
-    const existingChild = await db("children")
-      .where({
-        family_id: family.id,
-        national_id,
-      })
-      .first();
-
-    if (existingChild) {
-      return res.status(409).json({
-        message: "الابن مسجل مسبقًا داخل هذه الأسرة.",
-      });
-    }
-
     const [childId] = await db("children").insert({
       family_id: family.id,
       full_name: full_name.trim(),
-      national_id,
+      national_id: String(national_id),
       date_of_birth,
       education_status,
       institution_name:
@@ -1913,17 +1997,15 @@ const updateMyChild = async (req, res) => {
       national_id !== undefined &&
       String(national_id) !== String(child.national_id)
     ) {
-      const duplicateChild = await db("children")
-        .where({
-          family_id: family.id,
-          national_id,
-        })
-        .whereNot({ id: childId })
-        .first();
+      const duplicateNationalId = await checkNationalIdGlobally({
+        nationalId: national_id,
+        excludeTable: "children",
+        excludeId: childId,
+      });
 
-      if (duplicateChild) {
+      if (duplicateNationalId.exists) {
         return res.status(409).json({
-          message: "رقم الهوية مسجل لابن آخر داخل هذه الأسرة.",
+          message: `رقم الهوية مسجل مسبقًا في الأسرة كـ ${duplicateNationalId.label}.`,
         });
       }
     }
@@ -2178,16 +2260,13 @@ const createMyMarriedDaughter = async (req, res) => {
       });
     }
 
-    const existingDaughter = await db("married_daughters")
-      .where({
-        family_id: family.id,
-        national_id,
-      })
-      .first();
+    const duplicateNationalId = await checkNationalIdGlobally({
+      nationalId: national_id,
+    });
 
-    if (existingDaughter) {
+    if (duplicateNationalId.exists) {
       return res.status(409).json({
-        message: "البنت المتزوجة مسجلة مسبقًا داخل هذه الأسرة.",
+        message: `رقم الهوية مسجل مسبقًا في الأسرة كـ ${duplicateNationalId.label}.`,
       });
     }
 
@@ -2345,17 +2424,15 @@ const updateMyMarriedDaughter = async (req, res) => {
       national_id !== undefined &&
       String(national_id) !== String(daughter.national_id)
     ) {
-      const duplicateDaughter = await db("married_daughters")
-        .where({
-          family_id: family.id,
-          national_id,
-        })
-        .whereNot({ id: daughterId })
-        .first();
+      const duplicateNationalId = await checkNationalIdGlobally({
+        nationalId: national_id,
+        excludeTable: "married_daughters",
+        excludeId: daughterId,
+      });
 
-      if (duplicateDaughter) {
+      if (duplicateNationalId.exists) {
         return res.status(409).json({
-          message: "رقم الهوية مسجل لبنت متزوجة أخرى داخل هذه الأسرة.",
+          message: `رقم الهوية مسجل مسبقًا في الأسرة كـ ${duplicateNationalId.label}.`,
         });
       }
     }

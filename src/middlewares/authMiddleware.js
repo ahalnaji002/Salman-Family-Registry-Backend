@@ -38,12 +38,26 @@ const authenticate = async (req, res, next) => {
       });
     }
 
+    const roles = await db("user_roles")
+      .join("roles", "user_roles.role_id", "roles.id")
+      .where("user_roles.user_id", user.id)
+      .where("user_roles.is_active", true)
+      .select("roles.name");
+
+    const roleNames = roles.map((role) => role.name);
+
+    if (!roleNames.length) {
+      return res.status(403).json({
+        message: "لا يوجد دور فعال لهذا المستخدم.",
+      });
+    }
+
     req.user = {
       id: user.id,
       full_name: user.full_name,
       national_id: user.national_id,
       phone: user.phone,
-      role: decoded.role,
+      roles: roleNames,
     };
 
     next();

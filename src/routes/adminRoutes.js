@@ -20,6 +20,19 @@ const {
   //Settings
   getSystemSettings,
   updateSystemSettings,
+  openRegistration,
+  closeRegistration,
+  openGlobalEditing,
+  closeGlobalEditing,
+
+  // Supervisors
+  assignSupervisor,
+  getSupervisors,
+  getSupervisor,
+  updateSupervisor,
+  toggleSupervisorStatus,
+  deleteSupervisor,
+  updateSupervisorPermissions,
 } = require("../controllers/adminController");
 
 const { authenticate } = require("../middlewares/authMiddleware");
@@ -50,5 +63,21 @@ router.get("/export/families", exportFamiliesExcel);
 //Settings
 router.get("/settings", getSystemSettings);
 router.patch("/settings", updateSystemSettings);
+router.patch("/settings/registration/open", openRegistration);
+router.patch("/settings/registration/close", closeRegistration);
+router.patch("/settings/editing/open", openGlobalEditing);
+router.patch("/settings/editing/close", closeGlobalEditing);
+
+// Supervisors
+router.post("/supervisors", assignSupervisor);
+router.get("/supervisors", getSupervisors);
+router.get("/supervisors/:supervisorId", getSupervisor);
+router.patch("/supervisors/:supervisorId", updateSupervisor);
+router.patch("/supervisors/:supervisorId/status", toggleSupervisorStatus);
+router.delete("/supervisors/:supervisorId", deleteSupervisor);
+router.put(
+  "/supervisors/:supervisorId/permissions",
+  updateSupervisorPermissions,
+);
 
 module.exports = router;

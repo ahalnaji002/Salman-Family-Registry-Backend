@@ -3,6 +3,52 @@ const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const db = require("../config/database");
 
+// Helper
+const checkNationalIdGlobally = async (nationalId) => {
+  const normalizedNationalId = String(nationalId).trim();
+
+  const checks = [
+    {
+      table: "families",
+      label: "رب أسرة",
+    },
+    {
+      table: "wives",
+      label: "زوجة",
+    },
+    {
+      table: "children",
+      label: "ابن/ابنة",
+    },
+    {
+      table: "married_daughters",
+      label: "بنت متزوجة",
+    },
+  ];
+
+  for (const check of checks) {
+    const existing = await db(check.table)
+      .where({
+        national_id: normalizedNationalId,
+      })
+      .select("id")
+      .first();
+
+    if (existing) {
+      return {
+        exists: true,
+        table: check.table,
+        label: check.label,
+        id: existing.id,
+      };
+    }
+  }
+
+  return {
+    exists: false,
+  };
+};
+
 const register = async (req, res) => {
   const { full_name, national_id, phone, password } = req.body;
 
@@ -41,6 +87,34 @@ const register = async (req, res) => {
   }
 
   try {
+    // التحقق من أن التسجيل مفتوح في النظام
+    const settings = await db("system_settings")
+      .select("registration_enabled", "registration_closes_at")
+      .first();
+
+    if (!settings) {
+      return res.status(500).json({
+        message: "إعدادات النظام غير موجودة.",
+      });
+    }
+
+    if (!Boolean(settings.registration_enabled)) {
+      return res.status(403).json({
+        message: "التسجيل مغلق حاليًا.",
+      });
+    }
+
+    // إذا كان هناك موعد إغلاق محدد وانتهى
+    if (
+      settings.registration_closes_at &&
+      new Date(settings.registration_closes_at) <= new Date()
+    ) {
+      return res.status(403).json({
+        message: "انتهت فترة التسجيل.",
+      });
+    }
+
+    // فحص جدول users
     const existingUserByNationalId = await db("users")
       .where({
         national_id: normalizedNationalId,
@@ -50,6 +124,16 @@ const register = async (req, res) => {
     if (existingUserByNationalId) {
       return res.status(409).json({
         message: "رقم الهوية مسجل مسبقًا.",
+      });
+    }
+
+    // فحص الهوية في جميع أقسام أفراد العائلة
+    const duplicateNationalId =
+      await checkNationalIdGlobally(normalizedNationalId);
+
+    if (duplicateNationalId.exists) {
+      return res.status(409).json({
+        message: `رقم الهوية مسجل مسبقًا في النظام كـ ${duplicateNationalId.label}.`,
       });
     }
 
@@ -97,7 +181,13 @@ const register = async (req, res) => {
         other_job_type: null,
         personal_photo_path: null,
         form_status: "draft",
+
+        // للتوافق مع النظام القديم
         editing_enabled: true,
+
+        // الأسرة تتبع الإعداد العام افتراضيًا
+        editing_override: null,
+
         submitted_at: null,
         created_by: userId,
         updated_by: userId,
@@ -109,10 +199,12 @@ const register = async (req, res) => {
       };
     });
 
+    const roleNames = ["family_head"];
+
     const token = jwt.sign(
       {
         userId: result.userId,
-        role: "family_head",
+        roles: roleNames,
       },
       process.env.JWT_SECRET,
       {
@@ -128,12 +220,12 @@ const register = async (req, res) => {
           full_name: normalizedFullName,
           national_id: normalizedNationalId,
           phone: normalizedPhone,
-          role: "family_head",
+          roles: roleNames,
         },
         family: {
           id: result.familyId,
           form_status: "draft",
-          editing_enabled: true,
+          editing_override: null,
         },
         token,
       },
@@ -152,7 +244,6 @@ const register = async (req, res) => {
     });
   }
 };
-
 const login = async (req, res) => {
   const { national_id, password } = req.body;
 
@@ -185,23 +276,24 @@ const login = async (req, res) => {
       });
     }
 
-    const role = await db("user_roles")
+    const roles = await db("user_roles")
       .join("roles", "user_roles.role_id", "roles.id")
       .where("user_roles.user_id", user.id)
       .where("user_roles.is_active", true)
-      .select("roles.name")
-      .first();
+      .select("roles.name");
 
-    if (!role) {
+    if (!roles.length) {
       return res.status(403).json({
         message: "لا يوجد دور فعال لهذا المستخدم.",
       });
     }
 
+    const roleNames = roles.map((role) => role.name);
+
     const family = await db("families")
       .where({ user_id: user.id })
       .whereNull("deleted_at")
-      .select("id", "form_status", "editing_enabled")
+      .select("id", "form_status", "editing_enabled", "editing_override")
       .first();
 
     await db("users").where({ id: user.id }).update({
@@ -211,7 +303,7 @@ const login = async (req, res) => {
     const token = jwt.sign(
       {
         userId: user.id,
-        role: role.name,
+        roles: roleNames,
       },
       process.env.JWT_SECRET,
       {
@@ -227,15 +319,23 @@ const login = async (req, res) => {
           full_name: user.full_name,
           national_id: user.national_id,
           phone: user.phone,
-          role: role.name,
+          roles: roleNames,
         },
+
         family: family
           ? {
               id: family.id,
               form_status: family.form_status,
+
               editing_enabled: Boolean(family.editing_enabled),
+
+              editing_override:
+                family.editing_override === null
+                  ? null
+                  : Boolean(family.editing_override),
             }
           : null,
+
         token,
       },
     });
@@ -247,7 +347,6 @@ const login = async (req, res) => {
     });
   }
 };
-
 const me = async (req, res) => {
   try {
     const family = await db("families")
@@ -284,7 +383,6 @@ const me = async (req, res) => {
     });
   }
 };
-
 const changePassword = async (req, res) => {
   const { current_password, new_password, new_password_confirmation } =
     req.body;
@@ -354,7 +452,6 @@ const changePassword = async (req, res) => {
     });
   }
 };
-
 const forgotPassword = async (req, res) => {
   const { national_id } = req.body;
 
@@ -431,7 +528,6 @@ const forgotPassword = async (req, res) => {
     });
   }
 };
-
 const verifyResetCode = async (req, res) => {
   const { request_id, code } = req.body;
 
@@ -540,7 +636,6 @@ const verifyResetCode = async (req, res) => {
     });
   }
 };
-
 const resetPassword = async (req, res) => {
   const { reset_token, new_password, new_password_confirmation } = req.body;
 

@@ -2,6 +2,100 @@ const db = require("../config/database");
 const bcrypt = require("bcryptjs");
 const ExcelJS = require("exceljs");
 
+// Helper
+const getFamilyEditingPermission = async (family) => {
+  if (!family) {
+    return {
+      canEdit: false,
+      reason: "سجل الأسرة غير موجود.",
+    };
+  }
+
+  if (family.form_status !== "draft") {
+    return {
+      canEdit: false,
+      reason:
+        "تم تسليم النموذج ولا يمكن تعديله إلا بعد إعادته إلى المسودة من الإدارة.",
+    };
+  }
+
+  const settings = await db("system_settings")
+    .select("global_editing_enabled")
+    .first();
+
+  if (!settings) {
+    return {
+      canEdit: false,
+      reason: "إعدادات النظام غير موجودة.",
+    };
+  }
+
+  const globalEditingEnabled = Boolean(settings.global_editing_enabled);
+
+  const editingOverride =
+    family.editing_override === null ? null : Boolean(family.editing_override);
+
+  const canEdit =
+    editingOverride !== null ? editingOverride : globalEditingEnabled;
+
+  let reason = null;
+
+  if (!canEdit) {
+    reason =
+      editingOverride === false
+        ? "تم إغلاق التعديل لهذه الأسرة من قبل الإدارة."
+        : "التعديل مغلق حاليًا على مستوى النظام.";
+  }
+
+  return {
+    canEdit,
+    reason,
+    globalEditingEnabled,
+    editingOverride,
+  };
+};
+const checkNationalIdGlobally = async ({
+  nationalId,
+  excludeTable = null,
+  excludeId = null,
+}) => {
+  const normalizedNationalId = String(nationalId).trim();
+
+  const checks = [
+    { table: "families", label: "رب أسرة" },
+    { table: "wives", label: "زوجة" },
+    { table: "children", label: "ابن/ابنة" },
+    { table: "married_daughters", label: "بنت متزوجة" },
+  ];
+
+  for (const check of checks) {
+    let query = db(check.table).where({
+      national_id: normalizedNationalId,
+    });
+
+    if (excludeTable === check.table && excludeId !== null) {
+      query = query.whereNot({
+        id: excludeId,
+      });
+    }
+
+    const existing = await query.select("id").first();
+
+    if (existing) {
+      return {
+        exists: true,
+        table: check.table,
+        label: check.label,
+        id: existing.id,
+      };
+    }
+  }
+
+  return {
+    exists: false,
+  };
+};
+
 // Admin Dashboard
 const getDashboardStats = async (req, res) => {
   try {
@@ -292,7 +386,9 @@ const createFamily = async (req, res) => {
     });
   }
 
-  if (!/^\d{9}$/.test(national_id)) {
+  const normalizedNationalId = String(national_id).trim();
+
+  if (!/^\d{9}$/.test(normalizedNationalId)) {
     return res.status(400).json({
       message: "رقم الهوية يجب أن يتكون من 9 أرقام.",
     });
@@ -343,11 +439,25 @@ const createFamily = async (req, res) => {
   }
 
   try {
-    const existingUser = await db("users").where({ national_id }).first();
+    const existingUser = await db("users")
+      .where({
+        national_id: normalizedNationalId,
+      })
+      .first();
 
     if (existingUser) {
       return res.status(409).json({
         message: "رقم الهوية مسجل مسبقًا.",
+      });
+    }
+
+    const duplicateNationalId = await checkNationalIdGlobally({
+      nationalId: normalizedNationalId,
+    });
+
+    if (duplicateNationalId.exists) {
+      return res.status(409).json({
+        message: `رقم الهوية مسجل مسبقًا في النظام كـ ${duplicateNationalId.label}.`,
       });
     }
 
@@ -365,9 +475,9 @@ const createFamily = async (req, res) => {
 
     const result = await db.transaction(async (trx) => {
       const [userId] = await trx("users").insert({
-        full_name,
-        national_id,
-        phone,
+        full_name: full_name.trim(),
+        national_id: normalizedNationalId,
+        phone: phone.trim(),
         password_hash: passwordHash,
         is_active: true,
       });
@@ -381,10 +491,10 @@ const createFamily = async (req, res) => {
 
       const [familyId] = await trx("families").insert({
         user_id: userId,
-        full_name,
-        national_id,
+        full_name: full_name.trim(),
+        national_id: normalizedNationalId,
         date_of_birth,
-        phone,
+        phone: phone.trim(),
         blood_type: blood_type || null,
         marital_status,
         income_category,
@@ -392,7 +502,13 @@ const createFamily = async (req, res) => {
         job_type: job_type || null,
         other_job_type: job_type === "other" ? other_job_type : null,
         form_status: "draft",
+
+        // للتوافق مع النظام القديم
         editing_enabled: true,
+
+        // تتبع الإعداد العام افتراضيًا
+        editing_override: null,
+
         created_by: req.user.id,
         updated_by: req.user.id,
       });
@@ -408,20 +524,27 @@ const createFamily = async (req, res) => {
       data: {
         user: {
           id: result.userId,
-          full_name,
-          national_id,
-          phone,
-          role: "family_head",
+          full_name: full_name.trim(),
+          national_id: normalizedNationalId,
+          phone: phone.trim(),
+          roles: ["family_head"],
         },
         family: {
           id: result.familyId,
           form_status: "draft",
           editing_enabled: true,
+          editing_override: null,
         },
       },
     });
   } catch (error) {
     console.error("Create family error:", error);
+
+    if (error.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({
+        message: "رقم الهوية مسجل مسبقًا.",
+      });
+    }
 
     return res.status(500).json({
       message: "حدث خطأ أثناء إضافة الأسرة.",
@@ -462,7 +585,13 @@ const updateFamily = async (req, res) => {
       other_job_type,
     } = req.body;
 
-    if (national_id !== undefined && !/^\d{9}$/.test(String(national_id))) {
+    const normalizedNationalId =
+      national_id !== undefined ? String(national_id).trim() : undefined;
+
+    if (
+      normalizedNationalId !== undefined &&
+      !/^\d{9}$/.test(normalizedNationalId)
+    ) {
       return res.status(400).json({
         message: "رقم الهوية يجب أن يتكون من 9 أرقام.",
       });
@@ -533,27 +662,41 @@ const updateFamily = async (req, res) => {
       });
     }
 
-    if (national_id !== undefined && national_id !== family.national_id) {
-      const duplicateNationalId = await db("families")
-        .where({ national_id })
-        .whereNot({ id: familyId })
-        .whereNull("deleted_at")
-        .first();
+    // فحص الهوية على مستوى النظام كامل
+    if (
+      normalizedNationalId !== undefined &&
+      normalizedNationalId !== String(family.national_id)
+    ) {
+      // فحص users مع استثناء المستخدم المرتبط بنفس الأسرة
+      let userQuery = db("users").where({
+        national_id: normalizedNationalId,
+      });
 
-      if (duplicateNationalId) {
-        return res.status(409).json({
-          message: "رقم الهوية مسجل لأسرة أخرى.",
+      if (family.user_id) {
+        userQuery = userQuery.whereNot({
+          id: family.user_id,
         });
       }
 
-      const duplicateUser = await db("users")
-        .where({ national_id })
-        .whereNot({ id: family.user_id })
-        .first();
+      const duplicateUser = await userQuery.first();
 
       if (duplicateUser) {
         return res.status(409).json({
-          message: "رقم الهوية مسجل لمستخدم آخر.",
+          message: "رقم الهوية مسجل مسبقًا لمستخدم آخر.",
+        });
+      }
+
+      // فحص families / wives / children / married_daughters
+      // مع استثناء نفس سجل الأسرة
+      const duplicateNationalId = await checkNationalIdGlobally({
+        nationalId: normalizedNationalId,
+        excludeTable: "families",
+        excludeId: familyId,
+      });
+
+      if (duplicateNationalId.exists) {
+        return res.status(409).json({
+          message: `رقم الهوية مسجل مسبقًا في النظام كـ ${duplicateNationalId.label}.`,
         });
       }
     }
@@ -563,24 +706,48 @@ const updateFamily = async (req, res) => {
       updated_at: db.fn.now(),
     };
 
-    const allowedFields = {
-      full_name,
-      national_id,
-      phone,
-      date_of_birth,
-      blood_type,
-      marital_status,
-      income_category,
-      work_status,
-      job_type,
-      other_job_type,
-    };
+    if (full_name !== undefined) {
+      familyUpdates.full_name = String(full_name).trim();
+    }
 
-    Object.entries(allowedFields).forEach(([key, value]) => {
-      if (value !== undefined) {
-        familyUpdates[key] = value;
-      }
-    });
+    if (normalizedNationalId !== undefined) {
+      familyUpdates.national_id = normalizedNationalId;
+    }
+
+    if (phone !== undefined) {
+      familyUpdates.phone = String(phone).trim();
+    }
+
+    if (date_of_birth !== undefined) {
+      familyUpdates.date_of_birth = date_of_birth;
+    }
+
+    if (blood_type !== undefined) {
+      familyUpdates.blood_type = blood_type;
+    }
+
+    if (marital_status !== undefined) {
+      familyUpdates.marital_status = marital_status;
+    }
+
+    if (income_category !== undefined) {
+      familyUpdates.income_category = income_category;
+    }
+
+    if (work_status !== undefined) {
+      familyUpdates.work_status = work_status;
+    }
+
+    if (job_type !== undefined) {
+      familyUpdates.job_type = job_type;
+    }
+
+    if (other_job_type !== undefined) {
+      familyUpdates.other_job_type =
+        typeof other_job_type === "string"
+          ? other_job_type.trim()
+          : other_job_type;
+    }
 
     if (work_status !== undefined && work_status !== "employee") {
       familyUpdates.job_type = null;
@@ -589,21 +756,27 @@ const updateFamily = async (req, res) => {
       familyUpdates.other_job_type = null;
     }
 
+    if (Object.keys(familyUpdates).length === 2) {
+      return res.status(400).json({
+        message: "لم يتم إرسال أي بيانات للتعديل.",
+      });
+    }
+
     await db.transaction(async (trx) => {
       await trx("families").where({ id: familyId }).update(familyUpdates);
 
       const userUpdates = {};
 
       if (full_name !== undefined) {
-        userUpdates.full_name = full_name;
+        userUpdates.full_name = String(full_name).trim();
       }
 
-      if (national_id !== undefined) {
-        userUpdates.national_id = national_id;
+      if (normalizedNationalId !== undefined) {
+        userUpdates.national_id = normalizedNationalId;
       }
 
       if (phone !== undefined) {
-        userUpdates.phone = phone;
+        userUpdates.phone = String(phone).trim();
       }
 
       if (family.user_id && Object.keys(userUpdates).length > 0) {
@@ -630,6 +803,7 @@ const updateFamily = async (req, res) => {
         "other_job_type",
         "form_status",
         "editing_enabled",
+        "editing_override",
         "updated_by",
         "updated_at",
       )
@@ -641,11 +815,21 @@ const updateFamily = async (req, res) => {
         family: {
           ...updatedFamily,
           editing_enabled: Boolean(updatedFamily.editing_enabled),
+          editing_override:
+            updatedFamily.editing_override === null
+              ? null
+              : Boolean(updatedFamily.editing_override),
         },
       },
     });
   } catch (error) {
     console.error("Update family error:", error);
+
+    if (error.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({
+        message: "رقم الهوية مسجل مسبقًا.",
+      });
+    }
 
     return res.status(500).json({
       message: "حدث خطأ أثناء تعديل بيانات الأسرة.",
@@ -1377,6 +1561,710 @@ const updateSystemSettings = async (req, res) => {
     });
   }
 };
+const openRegistration = async (req, res) => {
+  try {
+    const settings = await db("system_settings").first();
+
+    if (!settings) {
+      return res.status(404).json({
+        message: "إعدادات النظام غير موجودة.",
+      });
+    }
+
+    await db("system_settings").where({ id: settings.id }).update({
+      registration_enabled: true,
+      updated_by: req.user.id,
+      updated_at: db.fn.now(),
+    });
+
+    return res.status(200).json({
+      message: "تم فتح التسجيل بنجاح.",
+      data: {
+        registration_enabled: true,
+      },
+    });
+  } catch (error) {
+    console.error("Open registration error:", error);
+
+    return res.status(500).json({
+      message: "حدث خطأ أثناء فتح التسجيل.",
+    });
+  }
+};
+const closeRegistration = async (req, res) => {
+  try {
+    const settings = await db("system_settings").first();
+
+    if (!settings) {
+      return res.status(404).json({
+        message: "إعدادات النظام غير موجودة.",
+      });
+    }
+
+    await db("system_settings").where({ id: settings.id }).update({
+      registration_enabled: false,
+      updated_by: req.user.id,
+      updated_at: db.fn.now(),
+    });
+
+    return res.status(200).json({
+      message: "تم إغلاق التسجيل بنجاح.",
+      data: {
+        registration_enabled: false,
+      },
+    });
+  } catch (error) {
+    console.error("Close registration error:", error);
+
+    return res.status(500).json({
+      message: "حدث خطأ أثناء إغلاق التسجيل.",
+    });
+  }
+};
+const openGlobalEditing = async (req, res) => {
+  try {
+    const settings = await db("system_settings").first();
+
+    if (!settings) {
+      return res.status(404).json({
+        message: "إعدادات النظام غير موجودة.",
+      });
+    }
+
+    await db("system_settings").where({ id: settings.id }).update({
+      global_editing_enabled: true,
+      updated_by: req.user.id,
+      updated_at: db.fn.now(),
+    });
+
+    return res.status(200).json({
+      message: "تم فتح التعديل العام بنجاح.",
+      data: {
+        global_editing_enabled: true,
+      },
+    });
+  } catch (error) {
+    console.error("Open global editing error:", error);
+
+    return res.status(500).json({
+      message: "حدث خطأ أثناء فتح التعديل العام.",
+    });
+  }
+};
+const closeGlobalEditing = async (req, res) => {
+  try {
+    const settings = await db("system_settings").first();
+
+    if (!settings) {
+      return res.status(404).json({
+        message: "إعدادات النظام غير موجودة.",
+      });
+    }
+
+    await db("system_settings").where({ id: settings.id }).update({
+      global_editing_enabled: false,
+      updated_by: req.user.id,
+      updated_at: db.fn.now(),
+    });
+
+    return res.status(200).json({
+      message: "تم إغلاق التعديل العام بنجاح.",
+      data: {
+        global_editing_enabled: false,
+      },
+    });
+  } catch (error) {
+    console.error("Close global editing error:", error);
+
+    return res.status(500).json({
+      message: "حدث خطأ أثناء إغلاق التعديل العام.",
+    });
+  }
+};
+
+// Supervisors
+const assignSupervisor = async (req, res) => {
+  try {
+    const userId = Number(req.body.user_id);
+
+    if (!Number.isInteger(userId) || userId <= 0) {
+      return res.status(400).json({
+        message: "رقم المستخدم غير صحيح.",
+      });
+    }
+
+    const user = await db("users")
+      .where({ id: userId })
+      .select("id", "full_name", "national_id", "phone", "is_active")
+      .first();
+
+    if (!user) {
+      return res.status(404).json({
+        message: "المستخدم غير موجود.",
+      });
+    }
+
+    if (!Boolean(user.is_active)) {
+      return res.status(403).json({
+        message: "لا يمكن تعيين مستخدم غير نشط كمشرف.",
+      });
+    }
+
+    const familyHeadRole = await db("roles")
+      .where({ name: "family_head" })
+      .select("id")
+      .first();
+
+    const supervisorRole = await db("roles")
+      .where({ name: "supervisor" })
+      .select("id")
+      .first();
+
+    if (!familyHeadRole || !supervisorRole) {
+      return res.status(500).json({
+        message: "أدوار النظام المطلوبة غير موجودة.",
+      });
+    }
+
+    const familyHeadAssignment = await db("user_roles")
+      .where({
+        user_id: userId,
+        role_id: familyHeadRole.id,
+        is_active: true,
+      })
+      .first();
+
+    if (!familyHeadAssignment) {
+      return res.status(400).json({
+        message: "يمكن تعيين رب أسرة فقط كمشرف.",
+      });
+    }
+
+    const existingSupervisorRole = await db("user_roles")
+      .where({
+        user_id: userId,
+        role_id: supervisorRole.id,
+      })
+      .first();
+
+    if (existingSupervisorRole) {
+      if (Boolean(existingSupervisorRole.is_active)) {
+        return res.status(409).json({
+          message: "المستخدم مشرف بالفعل.",
+        });
+      }
+
+      await db("user_roles").where({ id: existingSupervisorRole.id }).update({
+        is_active: true,
+        assigned_by: req.user.id,
+        updated_at: db.fn.now(),
+      });
+    } else {
+      await db("user_roles").insert({
+        user_id: userId,
+        role_id: supervisorRole.id,
+        assigned_by: req.user.id,
+        is_active: true,
+      });
+    }
+
+    return res.status(201).json({
+      message: "تم تعيين المستخدم كمشرف بنجاح.",
+      data: {
+        supervisor: {
+          id: user.id,
+          full_name: user.full_name,
+          national_id: user.national_id,
+          phone: user.phone,
+          is_active: Boolean(user.is_active),
+          roles: ["family_head", "supervisor"],
+        },
+      },
+    });
+  } catch (error) {
+    console.error("Assign supervisor error:", error);
+
+    return res.status(500).json({
+      message: "حدث خطأ أثناء تعيين المشرف.",
+    });
+  }
+};
+const getSupervisors = async (req, res) => {
+  try {
+    const supervisors = await db("users")
+      .join("user_roles", "users.id", "user_roles.user_id")
+      .join("roles", "user_roles.role_id", "roles.id")
+      .where("roles.name", "supervisor")
+      .select(
+        "users.id",
+        "users.full_name",
+        "users.national_id",
+        "users.phone",
+        "users.is_active",
+        "user_roles.is_active as supervisor_role_active",
+        "user_roles.assigned_by",
+        "user_roles.created_at as assigned_at",
+      )
+      .orderBy("user_roles.created_at", "desc");
+
+    const formattedSupervisors = supervisors.map((supervisor) => ({
+      id: supervisor.id,
+      full_name: supervisor.full_name,
+      national_id: supervisor.national_id,
+      phone: supervisor.phone,
+      is_active: Boolean(supervisor.is_active),
+      supervisor_role_active: Boolean(supervisor.supervisor_role_active),
+      assigned_by: supervisor.assigned_by,
+      assigned_at: supervisor.assigned_at,
+    }));
+
+    return res.status(200).json({
+      message: "تم جلب قائمة المشرفين بنجاح.",
+      data: {
+        supervisors: formattedSupervisors,
+        count: formattedSupervisors.length,
+      },
+    });
+  } catch (error) {
+    console.error("Get supervisors error:", error);
+
+    return res.status(500).json({
+      message: "حدث خطأ أثناء جلب قائمة المشرفين.",
+    });
+  }
+};
+const getSupervisor = async (req, res) => {
+  try {
+    const supervisorId = Number(req.params.supervisorId);
+
+    if (!Number.isInteger(supervisorId) || supervisorId <= 0) {
+      return res.status(400).json({
+        message: "رقم المشرف غير صحيح.",
+      });
+    }
+
+    const supervisorRole = await db("roles")
+      .where({ name: "supervisor" })
+      .select("id")
+      .first();
+
+    if (!supervisorRole) {
+      return res.status(500).json({
+        message: "دور المشرف غير موجود في النظام.",
+      });
+    }
+
+    const supervisor = await db("users")
+      .join("user_roles", "users.id", "user_roles.user_id")
+      .where("users.id", supervisorId)
+      .where("user_roles.role_id", supervisorRole.id)
+      .select(
+        "users.id",
+        "users.full_name",
+        "users.national_id",
+        "users.phone",
+        "users.is_active",
+        "users.last_login_at",
+        "user_roles.is_active as supervisor_role_active",
+        "user_roles.assigned_by",
+        "user_roles.created_at as assigned_at",
+        "user_roles.updated_at as role_updated_at",
+      )
+      .first();
+
+    if (!supervisor) {
+      return res.status(404).json({
+        message: "المشرف غير موجود.",
+      });
+    }
+
+    const family = await db("families")
+      .where({ user_id: supervisor.id })
+      .whereNull("deleted_at")
+      .select(
+        "id",
+        "full_name",
+        "national_id",
+        "form_status",
+        "editing_override",
+      )
+      .first();
+
+    return res.status(200).json({
+      message: "تم جلب بيانات المشرف بنجاح.",
+      data: {
+        supervisor: {
+          id: supervisor.id,
+          full_name: supervisor.full_name,
+          national_id: supervisor.national_id,
+          phone: supervisor.phone,
+          is_active: Boolean(supervisor.is_active),
+          supervisor_role_active: Boolean(supervisor.supervisor_role_active),
+          assigned_by: supervisor.assigned_by,
+          assigned_at: supervisor.assigned_at,
+          role_updated_at: supervisor.role_updated_at,
+          last_login_at: supervisor.last_login_at,
+          family: family
+            ? {
+                id: family.id,
+                full_name: family.full_name,
+                national_id: family.national_id,
+                form_status: family.form_status,
+                editing_override:
+                  family.editing_override === null
+                    ? null
+                    : Boolean(family.editing_override),
+              }
+            : null,
+        },
+      },
+    });
+  } catch (error) {
+    console.error("Get supervisor error:", error);
+
+    return res.status(500).json({
+      message: "حدث خطأ أثناء جلب بيانات المشرف.",
+    });
+  }
+};
+const updateSupervisor = async (req, res) => {
+  try {
+    const supervisorId = Number(req.params.supervisorId);
+
+    if (!Number.isInteger(supervisorId) || supervisorId <= 0) {
+      return res.status(400).json({
+        message: "رقم المشرف غير صحيح.",
+      });
+    }
+
+    const supervisorRole = await db("roles")
+      .where({ name: "supervisor" })
+      .select("id")
+      .first();
+
+    if (!supervisorRole) {
+      return res.status(500).json({
+        message: "دور المشرف غير موجود في النظام.",
+      });
+    }
+
+    const supervisorAssignment = await db("user_roles")
+      .where({
+        user_id: supervisorId,
+        role_id: supervisorRole.id,
+      })
+      .first();
+
+    if (!supervisorAssignment) {
+      return res.status(404).json({
+        message: "المشرف غير موجود.",
+      });
+    }
+
+    const { full_name, national_id, phone } = req.body;
+
+    if (national_id !== undefined && !/^\d{9}$/.test(String(national_id))) {
+      return res.status(400).json({
+        message: "رقم الهوية يجب أن يتكون من 9 أرقام.",
+      });
+    }
+
+    if (national_id !== undefined) {
+      const duplicateUser = await db("users")
+        .where({ national_id: String(national_id) })
+        .whereNot({ id: supervisorId })
+        .first();
+
+      if (duplicateUser) {
+        return res.status(409).json({
+          message: "رقم الهوية مستخدم من قبل مستخدم آخر.",
+        });
+      }
+    }
+
+    const updates = {};
+
+    if (full_name !== undefined) {
+      updates.full_name = String(full_name).trim();
+    }
+
+    if (national_id !== undefined) {
+      updates.national_id = String(national_id);
+    }
+
+    if (phone !== undefined) {
+      updates.phone = String(phone).trim();
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({
+        message: "لم يتم إرسال أي بيانات للتعديل.",
+      });
+    }
+
+    updates.updated_at = db.fn.now();
+
+    await db("users").where({ id: supervisorId }).update(updates);
+
+    const updatedSupervisor = await db("users")
+      .where({ id: supervisorId })
+      .select("id", "full_name", "national_id", "phone", "is_active")
+      .first();
+
+    return res.status(200).json({
+      message: "تم تعديل بيانات المشرف بنجاح.",
+      data: {
+        supervisor: {
+          ...updatedSupervisor,
+          is_active: Boolean(updatedSupervisor.is_active),
+        },
+      },
+    });
+  } catch (error) {
+    console.error("Update supervisor error:", error);
+
+    return res.status(500).json({
+      message: "حدث خطأ أثناء تعديل بيانات المشرف.",
+    });
+  }
+};
+const toggleSupervisorStatus = async (req, res) => {
+  try {
+    const supervisorId = Number(req.params.supervisorId);
+    const { is_active } = req.body;
+
+    if (!Number.isInteger(supervisorId) || supervisorId <= 0) {
+      return res.status(400).json({
+        message: "رقم المشرف غير صحيح.",
+      });
+    }
+
+    if (typeof is_active !== "boolean") {
+      return res.status(400).json({
+        message: "حالة المشرف يجب أن تكون true أو false.",
+      });
+    }
+
+    const supervisorRole = await db("roles")
+      .where({ name: "supervisor" })
+      .select("id")
+      .first();
+
+    if (!supervisorRole) {
+      return res.status(500).json({
+        message: "دور المشرف غير موجود في النظام.",
+      });
+    }
+
+    const supervisorAssignment = await db("user_roles")
+      .where({
+        user_id: supervisorId,
+        role_id: supervisorRole.id,
+      })
+      .first();
+
+    if (!supervisorAssignment) {
+      return res.status(404).json({
+        message: "المشرف غير موجود.",
+      });
+    }
+
+    await db("user_roles")
+      .where({
+        user_id: supervisorId,
+        role_id: supervisorRole.id,
+      })
+      .update({
+        is_active,
+        updated_at: db.fn.now(),
+      });
+
+    return res.status(200).json({
+      message: is_active ? "تم تفعيل المشرف بنجاح." : "تم تعطيل المشرف بنجاح.",
+      data: {
+        supervisor: {
+          id: supervisorId,
+          supervisor_role_active: is_active,
+        },
+      },
+    });
+  } catch (error) {
+    console.error("Toggle supervisor status error:", error);
+
+    return res.status(500).json({
+      message: "حدث خطأ أثناء تعديل حالة المشرف.",
+    });
+  }
+};
+const deleteSupervisor = async (req, res) => {
+  try {
+    const supervisorId = Number(req.params.supervisorId);
+
+    if (!Number.isInteger(supervisorId) || supervisorId <= 0) {
+      return res.status(400).json({
+        message: "رقم المشرف غير صحيح.",
+      });
+    }
+
+    const supervisorRole = await db("roles")
+      .where({ name: "supervisor" })
+      .select("id")
+      .first();
+
+    if (!supervisorRole) {
+      return res.status(500).json({
+        message: "دور المشرف غير موجود في النظام.",
+      });
+    }
+
+    const supervisorAssignment = await db("user_roles")
+      .where({
+        user_id: supervisorId,
+        role_id: supervisorRole.id,
+      })
+      .first();
+
+    if (!supervisorAssignment) {
+      return res.status(404).json({
+        message: "المشرف غير موجود.",
+      });
+    }
+
+    await db("user_roles")
+      .where({
+        user_id: supervisorId,
+        role_id: supervisorRole.id,
+      })
+      .delete();
+
+    return res.status(200).json({
+      message: "تم إزالة صلاحية المشرف بنجاح.",
+      data: {
+        user_id: supervisorId,
+        remaining_role: "family_head",
+      },
+    });
+  } catch (error) {
+    console.error("Delete supervisor error:", error);
+
+    return res.status(500).json({
+      message: "حدث خطأ أثناء إزالة المشرف.",
+    });
+  }
+};
+const updateSupervisorPermissions = async (req, res) => {
+  const trx = await db.transaction();
+
+  try {
+    const supervisorId = Number(req.params.supervisorId);
+    const { permissions } = req.body || {};
+
+    if (!Number.isInteger(supervisorId) || supervisorId <= 0) {
+      await trx.rollback();
+
+      return res.status(400).json({
+        message: "رقم المشرف غير صحيح.",
+      });
+    }
+
+    if (!Array.isArray(permissions)) {
+      await trx.rollback();
+
+      return res.status(400).json({
+        message: "permissions يجب أن تكون مصفوفة.",
+      });
+    }
+
+    const supervisorRole = await trx("roles")
+      .where({ name: "supervisor" })
+      .select("id")
+      .first();
+
+    if (!supervisorRole) {
+      await trx.rollback();
+
+      return res.status(500).json({
+        message: "دور المشرف غير موجود.",
+      });
+    }
+
+    const supervisorAssignment = await trx("user_roles")
+      .where({
+        user_id: supervisorId,
+        role_id: supervisorRole.id,
+      })
+      .first();
+
+    if (!supervisorAssignment) {
+      await trx.rollback();
+
+      return res.status(404).json({
+        message: "المشرف غير موجود.",
+      });
+    }
+
+    const permissionIds = [
+      ...new Set(permissions.map(Number).filter(Number.isInteger)),
+    ];
+
+    if (permissionIds.length !== permissions.length) {
+      await trx.rollback();
+
+      return res.status(400).json({
+        message: "أرقام الصلاحيات غير صحيحة.",
+      });
+    }
+
+    if (permissionIds.length > 0) {
+      const existingPermissions = await trx("permissions")
+        .whereIn("id", permissionIds)
+        .select("id");
+
+      if (existingPermissions.length !== permissionIds.length) {
+        await trx.rollback();
+
+        return res.status(400).json({
+          message: "توجد صلاحية غير موجودة في النظام.",
+        });
+      }
+    }
+
+    await trx("user_permissions").where({ user_id: supervisorId }).delete();
+
+    if (permissionIds.length > 0) {
+      await trx("user_permissions").insert(
+        permissionIds.map((permissionId) => ({
+          user_id: supervisorId,
+          permission_id: permissionId,
+          granted_by: req.user.id,
+        })),
+      );
+    }
+
+    const updatedPermissions = await trx("user_permissions")
+      .join("permissions", "user_permissions.permission_id", "permissions.id")
+      .where("user_permissions.user_id", supervisorId)
+      .select("permissions.id", "permissions.name", "permissions.display_name");
+
+    await trx.commit();
+
+    return res.status(200).json({
+      message: "تم تحديث صلاحيات المشرف بنجاح.",
+      data: {
+        supervisor_id: supervisorId,
+        permissions: updatedPermissions,
+      },
+    });
+  } catch (error) {
+    await trx.rollback();
+
+    console.error("Update supervisor permissions error:", error);
+
+    return res.status(500).json({
+      message: "حدث خطأ أثناء تحديث صلاحيات المشرف.",
+    });
+  }
+};
 module.exports = {
   // Admin Dashboard
   getDashboardStats,
@@ -1397,4 +2285,17 @@ module.exports = {
   //Settings
   getSystemSettings,
   updateSystemSettings,
+  openRegistration,
+  closeRegistration,
+  openGlobalEditing,
+  closeGlobalEditing,
+
+  // Supervisors
+  assignSupervisor,
+  getSupervisors,
+  getSupervisor,
+  updateSupervisor,
+  toggleSupervisorStatus,
+  deleteSupervisor,
+  updateSupervisorPermissions,
 };

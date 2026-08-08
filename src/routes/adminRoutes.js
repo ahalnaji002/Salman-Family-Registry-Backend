@@ -16,8 +16,9 @@ const {
 
   // Export
   exportFamiliesExcel,
+  getExportStats,
 
-  //Settings
+  // Settings
   getSystemSettings,
   updateSystemSettings,
   openRegistration,
@@ -36,7 +37,6 @@ const {
 } = require("../controllers/adminController");
 
 const { authenticate } = require("../middlewares/authMiddleware");
-
 const { authorizeRoles } = require("../middlewares/roleMiddleware");
 
 const router = express.Router();
@@ -59,8 +59,9 @@ router.patch("/families/:familyId/status", updateFamilyFormStatus);
 
 // Export
 router.get("/export/families", exportFamiliesExcel);
+router.get("/export/families/stats", getExportStats);
 
-//Settings
+// Settings
 router.get("/settings", getSystemSettings);
 router.patch("/settings", updateSystemSettings);
 router.patch("/settings/registration/open", openRegistration);
@@ -75,6 +76,7 @@ router.get("/supervisors/:supervisorId", getSupervisor);
 router.patch("/supervisors/:supervisorId", updateSupervisor);
 router.patch("/supervisors/:supervisorId/status", toggleSupervisorStatus);
 router.delete("/supervisors/:supervisorId", deleteSupervisor);
+
 router.put(
   "/supervisors/:supervisorId/permissions",
   updateSupervisorPermissions,

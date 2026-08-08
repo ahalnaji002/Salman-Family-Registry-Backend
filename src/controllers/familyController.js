@@ -63,6 +63,7 @@ const getMyFamily = async (req, res) => {
             "full_name",
             "national_id",
             db.raw("DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth"),
+            "gender",
             "education_status",
             "institution_name",
             "created_at",
@@ -112,6 +113,7 @@ const getMyFamily = async (req, res) => {
     });
   }
 };
+
 const updateMyFamily = async (req, res) => {
   try {
     const family = await db("families")
@@ -150,19 +152,39 @@ const updateMyFamily = async (req, res) => {
       other_job_type,
     } = req.body;
 
-    if (national_id !== undefined && !/^\d{9}$/.test(String(national_id))) {
+    if (
+      national_id !== undefined &&
+      !/^\d{9}$/.test(String(national_id))
+    ) {
       return res.status(400).json({
         message: "رقم الهوية يجب أن يتكون من 9 أرقام.",
       });
     }
 
-    const allowedMaritalStatuses = ["single", "married", "divorced", "widowed"];
+    const allowedMaritalStatuses = [
+      "single",
+      "married",
+      "divorced",
+      "widowed",
+    ];
 
-    const allowedIncomeCategories = ["0-1000", "1000-3000", "3000+"];
+    const allowedIncomeCategories = [
+      "0-1000",
+      "1000-3000",
+      "3000+",
+    ];
 
-    const allowedWorkStatuses = ["employee", "worker", "not_working"];
+    const allowedWorkStatuses = [
+      "employee",
+      "worker",
+      "not_working",
+    ];
 
-    const allowedJobTypes = ["government", "private", "other"];
+    const allowedJobTypes = [
+      "government",
+      "private",
+      "other",
+    ];
 
     if (
       marital_status !== undefined &&
@@ -202,26 +224,42 @@ const updateMyFamily = async (req, res) => {
     }
 
     const finalWorkStatus =
-      work_status !== undefined ? work_status : family.work_status;
+      work_status !== undefined
+        ? work_status
+        : family.work_status;
 
-    const finalJobType = job_type !== undefined ? job_type : family.job_type;
+    const finalJobType =
+      job_type !== undefined
+        ? job_type
+        : family.job_type;
 
     const finalOtherJobType =
-      other_job_type !== undefined ? other_job_type : family.other_job_type;
+      other_job_type !== undefined
+        ? other_job_type
+        : family.other_job_type;
 
-    if (finalWorkStatus === "employee" && !finalJobType) {
+    if (
+      finalWorkStatus === "employee" &&
+      !finalJobType
+    ) {
       return res.status(400).json({
         message: "نوع الوظيفة مطلوب عند اختيار موظف.",
       });
     }
 
-    if (finalJobType === "other" && !finalOtherJobType) {
+    if (
+      finalJobType === "other" &&
+      !finalOtherJobType
+    ) {
       return res.status(400).json({
         message: "يرجى توضيح نوع الوظيفة الأخرى.",
       });
     }
 
-    if (national_id !== undefined && national_id !== family.national_id) {
+    if (
+      national_id !== undefined &&
+      national_id !== family.national_id
+    ) {
       const duplicateFamily = await db("families")
         .where({ national_id })
         .whereNot({ id: family.id })
@@ -264,21 +302,31 @@ const updateMyFamily = async (req, res) => {
       other_job_type,
     };
 
-    Object.entries(allowedFields).forEach(([key, value]) => {
-      if (value !== undefined) {
-        familyUpdates[key] = value;
-      }
-    });
+    Object.entries(allowedFields).forEach(
+      ([key, value]) => {
+        if (value !== undefined) {
+          familyUpdates[key] = value;
+        }
+      },
+    );
 
-    if (work_status !== undefined && work_status !== "employee") {
+    if (
+      work_status !== undefined &&
+      work_status !== "employee"
+    ) {
       familyUpdates.job_type = null;
       familyUpdates.other_job_type = null;
-    } else if (job_type !== undefined && job_type !== "other") {
+    } else if (
+      job_type !== undefined &&
+      job_type !== "other"
+    ) {
       familyUpdates.other_job_type = null;
     }
 
     await db.transaction(async (trx) => {
-      await trx("families").where({ id: family.id }).update(familyUpdates);
+      await trx("families")
+        .where({ id: family.id })
+        .update(familyUpdates);
 
       const userUpdates = {};
 
@@ -297,7 +345,9 @@ const updateMyFamily = async (req, res) => {
       if (Object.keys(userUpdates).length > 0) {
         userUpdates.updated_at = trx.fn.now();
 
-        await trx("users").where({ id: req.user.id }).update(userUpdates);
+        await trx("users")
+          .where({ id: req.user.id })
+          .update(userUpdates);
       }
     });
 
@@ -328,7 +378,9 @@ const updateMyFamily = async (req, res) => {
       data: {
         family: {
           ...updatedFamily,
-          editing_enabled: Boolean(updatedFamily.editing_enabled),
+          editing_enabled: Boolean(
+            updatedFamily.editing_enabled,
+          ),
         },
       },
     });
@@ -340,6 +392,7 @@ const updateMyFamily = async (req, res) => {
     });
   }
 };
+
 const uploadMyPhoto = async (req, res) => {
   try {
     if (!req.file) {
@@ -351,7 +404,12 @@ const uploadMyPhoto = async (req, res) => {
     const family = await db("families")
       .where({ user_id: req.user.id })
       .whereNull("deleted_at")
-      .select("id", "form_status", "editing_enabled", "personal_photo_path")
+      .select(
+        "id",
+        "form_status",
+        "editing_enabled",
+        "personal_photo_path",
+      )
       .first();
 
     if (!family) {
@@ -378,19 +436,23 @@ const uploadMyPhoto = async (req, res) => {
       });
     }
 
-    const photoPath = `/uploads/family-photos/${req.file.filename}`;
+    const photoPath =
+      `/uploads/family-photos/${req.file.filename}`;
 
-    await db("families").where({ id: family.id }).update({
-      personal_photo_path: photoPath,
-      updated_by: req.user.id,
-      updated_at: db.fn.now(),
-    });
+    await db("families")
+      .where({ id: family.id })
+      .update({
+        personal_photo_path: photoPath,
+        updated_by: req.user.id,
+        updated_at: db.fn.now(),
+      });
 
     if (family.personal_photo_path) {
-      const oldPhotoRelativePath = family.personal_photo_path.replace(
-        /^\/uploads\//,
-        "",
-      );
+      const oldPhotoRelativePath =
+        family.personal_photo_path.replace(
+          /^\/uploads\//,
+          "",
+        );
 
       const oldPhotoAbsolutePath = path.join(
         __dirname,
@@ -399,7 +461,9 @@ const uploadMyPhoto = async (req, res) => {
         oldPhotoRelativePath,
       );
 
-      await fs.unlink(oldPhotoAbsolutePath).catch(() => {});
+      await fs
+        .unlink(oldPhotoAbsolutePath)
+        .catch(() => {});
     }
 
     return res.status(200).json({
@@ -413,19 +477,28 @@ const uploadMyPhoto = async (req, res) => {
       await fs.unlink(req.file.path).catch(() => {});
     }
 
-    console.error("Upload family photo error:", error);
+    console.error(
+      "Upload family photo error:",
+      error,
+    );
 
     return res.status(500).json({
       message: "حدث خطأ أثناء رفع الصورة الشخصية.",
     });
   }
 };
+
 const deleteMyPhoto = async (req, res) => {
   try {
     const family = await db("families")
       .where({ user_id: req.user.id })
       .whereNull("deleted_at")
-      .select("id", "form_status", "editing_enabled", "personal_photo_path")
+      .select(
+        "id",
+        "form_status",
+        "editing_enabled",
+        "personal_photo_path",
+      )
       .first();
 
     if (!family) {
@@ -452,10 +525,11 @@ const deleteMyPhoto = async (req, res) => {
       });
     }
 
-    const photoRelativePath = family.personal_photo_path.replace(
-      /^\/uploads\//,
-      "",
-    );
+    const photoRelativePath =
+      family.personal_photo_path.replace(
+        /^\/uploads\//,
+        "",
+      );
 
     const photoAbsolutePath = path.join(
       __dirname,
@@ -464,35 +538,51 @@ const deleteMyPhoto = async (req, res) => {
       photoRelativePath,
     );
 
-    await db("families").where({ id: family.id }).update({
-      personal_photo_path: null,
-      updated_by: req.user.id,
-      updated_at: db.fn.now(),
-    });
+    await db("families")
+      .where({ id: family.id })
+      .update({
+        personal_photo_path: null,
+        updated_by: req.user.id,
+        updated_at: db.fn.now(),
+      });
 
-    await fs.unlink(photoAbsolutePath).catch((error) => {
-      if (error.code !== "ENOENT") {
-        console.error("Delete physical photo error:", error);
-      }
-    });
+    await fs
+      .unlink(photoAbsolutePath)
+      .catch((error) => {
+        if (error.code !== "ENOENT") {
+          console.error(
+            "Delete physical photo error:",
+            error,
+          );
+        }
+      });
 
     return res.status(200).json({
       message: "تم حذف الصورة الشخصية بنجاح.",
     });
   } catch (error) {
-    console.error("Delete family photo error:", error);
+    console.error(
+      "Delete family photo error:",
+      error,
+    );
 
     return res.status(500).json({
       message: "حدث خطأ أثناء حذف الصورة الشخصية.",
     });
   }
 };
+
 const getMyEditingStatus = async (req, res) => {
   try {
     const family = await db("families")
       .where({ user_id: req.user.id })
       .whereNull("deleted_at")
-      .select("id", "form_status", "editing_enabled", "submitted_at")
+      .select(
+        "id",
+        "form_status",
+        "editing_enabled",
+        "submitted_at",
+      )
       .first();
 
     if (!family) {
@@ -502,14 +592,17 @@ const getMyEditingStatus = async (req, res) => {
     }
 
     const canEdit =
-      Boolean(family.editing_enabled) && family.form_status === "draft";
+      Boolean(family.editing_enabled) &&
+      family.form_status === "draft";
 
     return res.status(200).json({
       message: "تم جلب حالة التعديل بنجاح.",
       data: {
         family_id: family.id,
         form_status: family.form_status,
-        editing_enabled: Boolean(family.editing_enabled),
+        editing_enabled: Boolean(
+          family.editing_enabled,
+        ),
         can_edit: canEdit,
         submitted_at: family.submitted_at,
         reason: canEdit
@@ -520,13 +613,17 @@ const getMyEditingStatus = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Get editing status error:", error);
+    console.error(
+      "Get editing status error:",
+      error,
+    );
 
     return res.status(500).json({
       message: "حدث خطأ أثناء جلب حالة التعديل.",
     });
   }
 };
+
 const getMyFormCompletion = async (req, res) => {
   try {
     const family = await db("families")
@@ -540,8 +637,14 @@ const getMyFormCompletion = async (req, res) => {
       });
     }
 
-    const [housing, wivesCount, childrenCount] = await Promise.all([
-      db("family_housing").where({ family_id: family.id }).first(),
+    const [
+      housing,
+      wivesCount,
+      childrenCount,
+    ] = await Promise.all([
+      db("family_housing")
+        .where({ family_id: family.id })
+        .first(),
 
       db("wives")
         .where({ family_id: family.id })
@@ -561,19 +664,21 @@ const getMyFormCompletion = async (req, res) => {
         required: true,
         completed: Boolean(
           family.full_name &&
-          family.national_id &&
-          family.date_of_birth &&
-          family.phone &&
-          family.marital_status &&
-          family.income_category &&
-          family.work_status,
+            family.national_id &&
+            family.date_of_birth &&
+            family.phone &&
+            family.marital_status &&
+            family.income_category &&
+            family.work_status,
         ),
       },
       {
         key: "personal_photo",
         name: "الصورة الشخصية",
         required: true,
-        completed: Boolean(family.personal_photo_path),
+        completed: Boolean(
+          family.personal_photo_path,
+        ),
       },
       {
         key: "housing",
@@ -584,37 +689,48 @@ const getMyFormCompletion = async (req, res) => {
       {
         key: "wives",
         name: "بيانات الزوجة",
-        required: family.marital_status === "married",
+        required:
+          family.marital_status === "married",
         completed:
-          family.marital_status !== "married" || Number(wivesCount.count) > 0,
+          family.marital_status !== "married" ||
+          Number(wivesCount.count) > 0,
       },
       {
         key: "children",
         name: "بيانات الأبناء",
         required: false,
-        completed: Number(childrenCount.count) > 0,
+        completed:
+          Number(childrenCount.count) > 0,
       },
     ];
 
-    const requiredSections = sections.filter((section) => section.required);
-
-    const completedRequiredSections = requiredSections.filter(
-      (section) => section.completed,
+    const requiredSections = sections.filter(
+      (section) => section.required,
     );
+
+    const completedRequiredSections =
+      requiredSections.filter(
+        (section) => section.completed,
+      );
 
     const percentage =
       requiredSections.length === 0
         ? 100
         : Math.round(
-            (completedRequiredSections.length / requiredSections.length) * 100,
+            (completedRequiredSections.length /
+              requiredSections.length) *
+              100,
           );
 
-    const missingSections = requiredSections
-      .filter((section) => !section.completed)
-      .map((section) => ({
-        key: section.key,
-        name: section.name,
-      }));
+    const missingSections =
+      requiredSections
+        .filter(
+          (section) => !section.completed,
+        )
+        .map((section) => ({
+          key: section.key,
+          name: section.name,
+        }));
 
     const isReadyToSubmit =
       missingSections.length === 0 &&
@@ -622,27 +738,36 @@ const getMyFormCompletion = async (req, res) => {
       Boolean(family.editing_enabled);
 
     return res.status(200).json({
-      message: "تم جلب حالة اكتمال النموذج بنجاح.",
+      message:
+        "تم جلب حالة اكتمال النموذج بنجاح.",
       data: {
         family_id: family.id,
         percentage,
-        completed_required_sections: completedRequiredSections.length,
-        total_required_sections: requiredSections.length,
+        completed_required_sections:
+          completedRequiredSections.length,
+        total_required_sections:
+          requiredSections.length,
         is_ready_to_submit: isReadyToSubmit,
         form_status: family.form_status,
-        editing_enabled: Boolean(family.editing_enabled),
+        editing_enabled: Boolean(
+          family.editing_enabled,
+        ),
         sections,
         missing_sections: missingSections,
       },
     });
   } catch (error) {
-    console.error("Get form completion error:", error);
+    console.error(
+      "Get form completion error:",
+      error,
+    );
 
     return res.status(500).json({
       message: "حدث خطأ أثناء حساب اكتمال النموذج.",
     });
   }
 };
+
 const submitMyFamilyForm = async (req, res) => {
   try {
     const family = await db("families")
@@ -668,19 +793,24 @@ const submitMyFamilyForm = async (req, res) => {
       });
     }
 
-    const [housing, wivesCount] = await Promise.all([
-      db("family_housing").where({ family_id: family.id }).first(),
+    const [housing, wivesCount] =
+      await Promise.all([
+        db("family_housing")
+          .where({ family_id: family.id })
+          .first(),
 
-      db("wives")
-        .where({ family_id: family.id })
-        .count({ count: "id" })
-        .first(),
-    ]);
+        db("wives")
+          .where({ family_id: family.id })
+          .count({ count: "id" })
+          .first(),
+      ]);
 
     const missingFields = [];
 
     if (!family.full_name) {
-      missingFields.push("الاسم الكامل لرب الأسرة");
+      missingFields.push(
+        "الاسم الكامل لرب الأسرة",
+      );
     }
 
     if (!family.national_id) {
@@ -696,7 +826,9 @@ const submitMyFamilyForm = async (req, res) => {
     }
 
     if (!family.marital_status) {
-      missingFields.push("الحالة الاجتماعية");
+      missingFields.push(
+        "الحالة الاجتماعية",
+      );
     }
 
     if (!family.income_category) {
@@ -707,12 +839,20 @@ const submitMyFamilyForm = async (req, res) => {
       missingFields.push("حالة العمل");
     }
 
-    if (family.work_status === "employee" && !family.job_type) {
+    if (
+      family.work_status === "employee" &&
+      !family.job_type
+    ) {
       missingFields.push("نوع الوظيفة");
     }
 
-    if (family.job_type === "other" && !family.other_job_type) {
-      missingFields.push("توضيح نوع الوظيفة الأخرى");
+    if (
+      family.job_type === "other" &&
+      !family.other_job_type
+    ) {
+      missingFields.push(
+        "توضيح نوع الوظيفة الأخرى",
+      );
     }
 
     if (!family.personal_photo_path) {
@@ -723,88 +863,122 @@ const submitMyFamilyForm = async (req, res) => {
       missingFields.push("بيانات السكن");
     }
 
-    if (family.marital_status === "married" && Number(wivesCount.count) === 0) {
+    if (
+      family.marital_status === "married" &&
+      Number(wivesCount.count) === 0
+    ) {
       missingFields.push("بيانات الزوجة");
     }
 
     if (missingFields.length > 0) {
       return res.status(422).json({
-        message: "لا يمكن اعتماد النموذج قبل استكمال البيانات المطلوبة.",
+        message:
+          "لا يمكن اعتماد النموذج قبل استكمال البيانات المطلوبة.",
         data: {
           missing_fields: missingFields,
         },
       });
     }
 
-    await db("families").where({ id: family.id }).update({
-      form_status: "submitted",
-      editing_enabled: false,
-      submitted_at: db.fn.now(),
-      updated_by: req.user.id,
-      updated_at: db.fn.now(),
-    });
-
-    const submittedFamily = await db("families")
+    await db("families")
       .where({ id: family.id })
-      .select("id", "form_status", "editing_enabled", "submitted_at")
-      .first();
+      .update({
+        form_status: "submitted",
+        editing_enabled: false,
+        submitted_at: db.fn.now(),
+        updated_by: req.user.id,
+        updated_at: db.fn.now(),
+      });
+
+    const submittedFamily =
+      await db("families")
+        .where({ id: family.id })
+        .select(
+          "id",
+          "form_status",
+          "editing_enabled",
+          "submitted_at",
+        )
+        .first();
 
     return res.status(200).json({
       message: "تم اعتماد نموذج الأسرة بنجاح.",
       data: {
         family: {
           id: submittedFamily.id,
-          form_status: submittedFamily.form_status,
-          editing_enabled: Boolean(submittedFamily.editing_enabled),
-          submitted_at: submittedFamily.submitted_at,
+          form_status:
+            submittedFamily.form_status,
+          editing_enabled: Boolean(
+            submittedFamily.editing_enabled,
+          ),
+          submitted_at:
+            submittedFamily.submitted_at,
         },
       },
     });
   } catch (error) {
-    console.error("Submit family form error:", error);
+    console.error(
+      "Submit family form error:",
+      error,
+    );
 
     return res.status(500).json({
       message: "حدث خطأ أثناء اعتماد نموذج الأسرة.",
     });
   }
 };
+
 const deleteMyFamily = async (req, res) => {
   try {
     const { password } = req.body;
 
     if (!password) {
       return res.status(400).json({
-        message: "كلمة المرور مطلوبة لتأكيد حذف الأسرة.",
+        message:
+          "كلمة المرور مطلوبة لتأكيد حذف الأسرة.",
       });
     }
 
     const family = await db("families")
       .where({ user_id: req.user.id })
       .whereNull("deleted_at")
-      .select("id", "user_id", "full_name", "form_status", "editing_enabled")
+      .select(
+        "id",
+        "user_id",
+        "full_name",
+        "form_status",
+        "editing_enabled",
+      )
       .first();
 
     if (!family) {
       return res.status(404).json({
-        message: "سجل الأسرة غير موجود أو محذوف مسبقًا.",
+        message:
+          "سجل الأسرة غير موجود أو محذوف مسبقًا.",
       });
     }
 
     if (!family.editing_enabled) {
       return res.status(403).json({
-        message: "لا يمكن حذف الأسرة لأن التعديل مغلق حاليًا.",
+        message:
+          "لا يمكن حذف الأسرة لأن التعديل مغلق حاليًا.",
       });
     }
 
     if (family.form_status !== "draft") {
       return res.status(403).json({
-        message: "لا يمكن حذف الأسرة بعد اعتماد النموذج.",
+        message:
+          "لا يمكن حذف الأسرة بعد اعتماد النموذج.",
       });
     }
 
     const user = await db("users")
       .where({ id: req.user.id })
-      .select("id", "password_hash", "is_active")
+      .select(
+        "id",
+        "password_hash",
+        "is_active",
+      )
       .first();
 
     if (!user) {
@@ -813,7 +987,11 @@ const deleteMyFamily = async (req, res) => {
       });
     }
 
-    const passwordMatches = await bcrypt.compare(password, user.password_hash);
+    const passwordMatches =
+      await bcrypt.compare(
+        password,
+        user.password_hash,
+      );
 
     if (!passwordMatches) {
       return res.status(401).json({
@@ -822,18 +1000,22 @@ const deleteMyFamily = async (req, res) => {
     }
 
     await db.transaction(async (trx) => {
-      await trx("families").where({ id: family.id }).update({
-        deleted_at: trx.fn.now(),
-        deleted_by: req.user.id,
-        editing_enabled: false,
-        updated_by: req.user.id,
-        updated_at: trx.fn.now(),
-      });
+      await trx("families")
+        .where({ id: family.id })
+        .update({
+          deleted_at: trx.fn.now(),
+          deleted_by: req.user.id,
+          editing_enabled: false,
+          updated_by: req.user.id,
+          updated_at: trx.fn.now(),
+        });
 
-      await trx("users").where({ id: req.user.id }).update({
-        is_active: false,
-        updated_at: trx.fn.now(),
-      });
+      await trx("users")
+        .where({ id: req.user.id })
+        .update({
+          is_active: false,
+          updated_at: trx.fn.now(),
+        });
     });
 
     return res.status(200).json({
@@ -846,7 +1028,10 @@ const deleteMyFamily = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Delete my family error:", error);
+    console.error(
+      "Delete my family error:",
+      error,
+    );
 
     return res.status(500).json({
       message: "حدث خطأ أثناء حذف سجل الأسرة.",
@@ -869,7 +1054,9 @@ const getMyHousing = async (req, res) => {
       });
     }
 
-    const housing = await db("family_housing")
+    const housing = await db(
+      "family_housing",
+    )
       .where({ family_id: family.id })
       .first();
 
@@ -880,19 +1067,27 @@ const getMyHousing = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Get housing error:", error);
+    console.error(
+      "Get housing error:",
+      error,
+    );
 
     return res.status(500).json({
       message: "حدث خطأ أثناء جلب بيانات السكن.",
     });
   }
 };
+
 const upsertMyHousing = async (req, res) => {
   try {
     const family = await db("families")
       .where({ user_id: req.user.id })
       .whereNull("deleted_at")
-      .select("id", "form_status", "editing_enabled")
+      .select(
+        "id",
+        "form_status",
+        "editing_enabled",
+      )
       .first();
 
     if (!family) {
@@ -903,13 +1098,15 @@ const upsertMyHousing = async (req, res) => {
 
     if (!family.editing_enabled) {
       return res.status(403).json({
-        message: "التعديل مغلق حاليًا لهذه الأسرة.",
+        message:
+          "التعديل مغلق حاليًا لهذه الأسرة.",
       });
     }
 
     if (family.form_status !== "draft") {
       return res.status(403).json({
-        message: "لا يمكن تعديل بيانات السكن بعد اعتماد النموذج.",
+        message:
+          "لا يمكن تعديل بيانات السكن بعد اعتماد النموذج.",
       });
     }
 
@@ -920,9 +1117,14 @@ const upsertMyHousing = async (req, res) => {
       current_address,
     } = req.body;
 
-    if (!previous_area || !current_housing_type || !current_address) {
+    if (
+      !previous_area ||
+      !current_housing_type ||
+      !current_address
+    ) {
       return res.status(400).json({
-        message: "يرجى تعبئة جميع حقول السكن المطلوبة.",
+        message:
+          "يرجى تعبئة جميع حقول السكن المطلوبة.",
       });
     }
 
@@ -933,7 +1135,11 @@ const upsertMyHousing = async (req, res) => {
       "south_gaza",
     ];
 
-    const allowedHousingTypes = ["owned", "rented", "displaced"];
+    const allowedHousingTypes = [
+      "owned",
+      "rented",
+      "displaced",
+    ];
 
     const allowedDisplacementTypes = [
       "tent",
@@ -941,30 +1147,49 @@ const upsertMyHousing = async (req, res) => {
       "relatives_house",
     ];
 
-    if (!allowedPreviousAreas.includes(previous_area)) {
+    if (
+      !allowedPreviousAreas.includes(
+        previous_area,
+      )
+    ) {
       return res.status(400).json({
-        message: "منطقة السكن السابقة غير صحيحة.",
-      });
-    }
-
-    if (!allowedHousingTypes.includes(current_housing_type)) {
-      return res.status(400).json({
-        message: "نوع السكن الحالي غير صحيح.",
+        message:
+          "منطقة السكن السابقة غير صحيحة.",
       });
     }
 
     if (
-      current_housing_type === "displaced" &&
-      !allowedDisplacementTypes.includes(displacement_type)
+      !allowedHousingTypes.includes(
+        current_housing_type,
+      )
     ) {
       return res.status(400).json({
-        message: "نوع النزوح مطلوب وغير صحيح.",
+        message:
+          "نوع السكن الحالي غير صحيح.",
       });
     }
 
-    if (current_housing_type !== "displaced" && displacement_type) {
+    if (
+      current_housing_type ===
+        "displaced" &&
+      !allowedDisplacementTypes.includes(
+        displacement_type,
+      )
+    ) {
       return res.status(400).json({
-        message: "نوع النزوح يُستخدم فقط عندما يكون السكن الحالي نازحًا.",
+        message:
+          "نوع النزوح مطلوب وغير صحيح.",
+      });
+    }
+
+    if (
+      current_housing_type !==
+        "displaced" &&
+      displacement_type
+    ) {
+      return res.status(400).json({
+        message:
+          "نوع النزوح يُستخدم فقط عندما يكون السكن الحالي نازحًا.",
       });
     }
 
@@ -972,56 +1197,81 @@ const upsertMyHousing = async (req, res) => {
       previous_area,
       current_housing_type,
       displacement_type:
-        current_housing_type === "displaced" ? displacement_type : null,
-      current_address: current_address.trim(),
+        current_housing_type ===
+        "displaced"
+          ? displacement_type
+          : null,
+      current_address:
+        current_address.trim(),
       updated_at: db.fn.now(),
     };
 
-    const existingHousing = await db("family_housing")
-      .where({ family_id: family.id })
-      .first();
+    const existingHousing =
+      await db("family_housing")
+        .where({
+          family_id: family.id,
+        })
+        .first();
 
     let housingId;
 
     if (existingHousing) {
       await db("family_housing")
-        .where({ family_id: family.id })
+        .where({
+          family_id: family.id,
+        })
         .update(housingData);
 
       housingId = existingHousing.id;
     } else {
-      const [newHousingId] = await db("family_housing").insert({
-        family_id: family.id,
-        ...housingData,
-      });
+      const [newHousingId] =
+        await db(
+          "family_housing",
+        ).insert({
+          family_id: family.id,
+          ...housingData,
+        });
 
       housingId = newHousingId;
     }
 
-    const housing = await db("family_housing").where({ id: housingId }).first();
+    const housing =
+      await db("family_housing")
+        .where({ id: housingId })
+        .first();
 
-    return res.status(existingHousing ? 200 : 201).json({
-      message: existingHousing
-        ? "تم تعديل بيانات السكن بنجاح."
-        : "تمت إضافة بيانات السكن بنجاح.",
-      data: {
-        housing,
-      },
-    });
+    return res
+      .status(existingHousing ? 200 : 201)
+      .json({
+        message: existingHousing
+          ? "تم تعديل بيانات السكن بنجاح."
+          : "تمت إضافة بيانات السكن بنجاح.",
+        data: {
+          housing,
+        },
+      });
   } catch (error) {
-    console.error("Upsert housing error:", error);
+    console.error(
+      "Upsert housing error:",
+      error,
+    );
 
     return res.status(500).json({
       message: "حدث خطأ أثناء حفظ بيانات السكن.",
     });
   }
 };
+
 const deleteMyHousing = async (req, res) => {
   try {
     const family = await db("families")
       .where({ user_id: req.user.id })
       .whereNull("deleted_at")
-      .select("id", "form_status", "editing_enabled")
+      .select(
+        "id",
+        "form_status",
+        "editing_enabled",
+      )
       .first();
 
     if (!family) {
@@ -1032,20 +1282,25 @@ const deleteMyHousing = async (req, res) => {
 
     if (!family.editing_enabled) {
       return res.status(403).json({
-        message: "التعديل مغلق حاليًا لهذه الأسرة.",
+        message:
+          "التعديل مغلق حاليًا لهذه الأسرة.",
       });
     }
 
     if (family.form_status !== "draft") {
       return res.status(403).json({
-        message: "لا يمكن حذف بيانات السكن بعد اعتماد النموذج.",
+        message:
+          "لا يمكن حذف بيانات السكن بعد اعتماد النموذج.",
       });
     }
 
-    const housing = await db("family_housing")
-      .where({ family_id: family.id })
-      .select("id")
-      .first();
+    const housing =
+      await db("family_housing")
+        .where({
+          family_id: family.id,
+        })
+        .select("id")
+        .first();
 
     if (!housing) {
       return res.status(404).json({
@@ -1053,13 +1308,18 @@ const deleteMyHousing = async (req, res) => {
       });
     }
 
-    await db("family_housing").where({ id: housing.id }).delete();
+    await db("family_housing")
+      .where({ id: housing.id })
+      .delete();
 
     return res.status(200).json({
       message: "تم حذف بيانات السكن بنجاح.",
     });
   } catch (error) {
-    console.error("Delete housing error:", error);
+    console.error(
+      "Delete housing error:",
+      error,
+    );
 
     return res.status(500).json({
       message: "حدث خطأ أثناء حذف بيانات السكن.",
@@ -1073,7 +1333,12 @@ const createMyWife = async (req, res) => {
     const family = await db("families")
       .where({ user_id: req.user.id })
       .whereNull("deleted_at")
-      .select("id", "marital_status", "form_status", "editing_enabled")
+      .select(
+        "id",
+        "marital_status",
+        "form_status",
+        "editing_enabled",
+      )
       .first();
 
     if (!family) {
@@ -1084,19 +1349,24 @@ const createMyWife = async (req, res) => {
 
     if (!family.editing_enabled) {
       return res.status(403).json({
-        message: "التعديل مغلق حاليًا لهذه الأسرة.",
+        message:
+          "التعديل مغلق حاليًا لهذه الأسرة.",
       });
     }
 
     if (family.form_status !== "draft") {
       return res.status(403).json({
-        message: "لا يمكن إضافة زوجة بعد اعتماد النموذج.",
+        message:
+          "لا يمكن إضافة زوجة بعد اعتماد النموذج.",
       });
     }
 
-    if (family.marital_status !== "married") {
+    if (
+      family.marital_status !== "married"
+    ) {
       return res.status(400).json({
-        message: "لا يمكن إضافة زوجة إلا إذا كانت الحالة الاجتماعية متزوج.",
+        message:
+          "لا يمكن إضافة زوجة إلا إذا كانت الحالة الاجتماعية متزوج.",
       });
     }
 
@@ -1118,38 +1388,50 @@ const createMyWife = async (req, res) => {
       !employment_status
     ) {
       return res.status(400).json({
-        message: "يرجى تعبئة جميع بيانات الزوجة المطلوبة.",
+        message:
+          "يرجى تعبئة جميع بيانات الزوجة المطلوبة.",
       });
     }
 
-    if (!/^\d{9}$/.test(String(national_id))) {
+    if (
+      !/^\d{9}$/.test(
+        String(national_id),
+      )
+    ) {
       return res.status(400).json({
-        message: "رقم هوية الزوجة يجب أن يتكون من 9 أرقام.",
+        message:
+          "رقم هوية الزوجة يجب أن يتكون من 9 أرقام.",
       });
     }
 
-    const existingWife = await db("wives")
-      .where({
-        family_id: family.id,
-        national_id,
-      })
-      .first();
+    const existingWife =
+      await db("wives")
+        .where({
+          family_id: family.id,
+          national_id,
+        })
+        .first();
 
     if (existingWife) {
       return res.status(409).json({
-        message: "الزوجة مسجلة مسبقًا داخل هذه الأسرة.",
+        message:
+          "الزوجة مسجلة مسبقًا داخل هذه الأسرة.",
       });
     }
 
-    const [wifeId] = await db("wives").insert({
-      family_id: family.id,
-      full_name: full_name.trim(),
-      national_id,
-      date_of_birth,
-      phone: phone.trim(),
-      previous_family_name: previous_family_name.trim(),
-      employment_status: employment_status.trim(),
-    });
+    const [wifeId] =
+      await db("wives").insert({
+        family_id: family.id,
+        full_name:
+          full_name.trim(),
+        national_id,
+        date_of_birth,
+        phone: phone.trim(),
+        previous_family_name:
+          previous_family_name.trim(),
+        employment_status:
+          employment_status.trim(),
+      });
 
     const wife = await db("wives")
       .where({ id: wifeId })
@@ -1168,19 +1450,25 @@ const createMyWife = async (req, res) => {
       .first();
 
     return res.status(201).json({
-      message: "تمت إضافة الزوجة بنجاح.",
+      message:
+        "تمت إضافة الزوجة بنجاح.",
       data: {
         wife,
       },
     });
   } catch (error) {
-    console.error("Create wife error:", error);
+    console.error(
+      "Create wife error:",
+      error,
+    );
 
     return res.status(500).json({
-      message: "حدث خطأ أثناء إضافة الزوجة.",
+      message:
+        "حدث خطأ أثناء إضافة الزوجة.",
     });
   }
 };
+
 const getMyWives = async (req, res) => {
   try {
     const family = await db("families")
@@ -1196,7 +1484,9 @@ const getMyWives = async (req, res) => {
     }
 
     const wives = await db("wives")
-      .where({ family_id: family.id })
+      .where({
+        family_id: family.id,
+      })
       .select(
         "id",
         "family_id",
@@ -1212,27 +1502,39 @@ const getMyWives = async (req, res) => {
       .orderBy("created_at", "asc");
 
     return res.status(200).json({
-      message: "تم جلب بيانات الزوجات بنجاح.",
+      message:
+        "تم جلب بيانات الزوجات بنجاح.",
       data: {
         wives,
         count: wives.length,
       },
     });
   } catch (error) {
-    console.error("Get wives error:", error);
+    console.error(
+      "Get wives error:",
+      error,
+    );
 
     return res.status(500).json({
-      message: "حدث خطأ أثناء جلب بيانات الزوجات.",
+      message:
+        "حدث خطأ أثناء جلب بيانات الزوجات.",
     });
   }
 };
+
 const getMyWife = async (req, res) => {
   try {
-    const wifeId = Number(req.params.wifeId);
+    const wifeId = Number(
+      req.params.wifeId,
+    );
 
-    if (!Number.isInteger(wifeId) || wifeId <= 0) {
+    if (
+      !Number.isInteger(wifeId) ||
+      wifeId <= 0
+    ) {
       return res.status(400).json({
-        message: "رقم الزوجة غير صحيح.",
+        message:
+          "رقم الزوجة غير صحيح.",
       });
     }
 
@@ -1244,7 +1546,8 @@ const getMyWife = async (req, res) => {
 
     if (!family) {
       return res.status(404).json({
-        message: "سجل الأسرة غير موجود.",
+        message:
+          "سجل الأسرة غير موجود.",
       });
     }
 
@@ -1269,55 +1572,75 @@ const getMyWife = async (req, res) => {
 
     if (!wife) {
       return res.status(404).json({
-        message: "بيانات الزوجة غير موجودة.",
+        message:
+          "بيانات الزوجة غير موجودة.",
       });
     }
 
     return res.status(200).json({
-      message: "تم جلب بيانات الزوجة بنجاح.",
+      message:
+        "تم جلب بيانات الزوجة بنجاح.",
       data: {
         wife,
       },
     });
   } catch (error) {
-    console.error("Get wife error:", error);
+    console.error(
+      "Get wife error:",
+      error,
+    );
 
     return res.status(500).json({
-      message: "حدث خطأ أثناء جلب بيانات الزوجة.",
+      message:
+        "حدث خطأ أثناء جلب بيانات الزوجة.",
     });
   }
 };
+
 const updateMyWife = async (req, res) => {
   try {
-    const wifeId = Number(req.params.wifeId);
+    const wifeId = Number(
+      req.params.wifeId,
+    );
 
-    if (!Number.isInteger(wifeId) || wifeId <= 0) {
+    if (
+      !Number.isInteger(wifeId) ||
+      wifeId <= 0
+    ) {
       return res.status(400).json({
-        message: "رقم الزوجة غير صحيح.",
+        message:
+          "رقم الزوجة غير صحيح.",
       });
     }
 
     const family = await db("families")
       .where({ user_id: req.user.id })
       .whereNull("deleted_at")
-      .select("id", "form_status", "editing_enabled")
+      .select(
+        "id",
+        "form_status",
+        "editing_enabled",
+      )
       .first();
 
     if (!family) {
       return res.status(404).json({
-        message: "سجل الأسرة غير موجود.",
+        message:
+          "سجل الأسرة غير موجود.",
       });
     }
 
     if (!family.editing_enabled) {
       return res.status(403).json({
-        message: "التعديل مغلق حاليًا لهذه الأسرة.",
+        message:
+          "التعديل مغلق حاليًا لهذه الأسرة.",
       });
     }
 
     if (family.form_status !== "draft") {
       return res.status(403).json({
-        message: "لا يمكن تعديل بيانات الزوجة بعد اعتماد النموذج.",
+        message:
+          "لا يمكن تعديل بيانات الزوجة بعد اعتماد النموذج.",
       });
     }
 
@@ -1330,7 +1653,8 @@ const updateMyWife = async (req, res) => {
 
     if (!wife) {
       return res.status(404).json({
-        message: "بيانات الزوجة غير موجودة.",
+        message:
+          "بيانات الزوجة غير موجودة.",
       });
     }
 
@@ -1343,24 +1667,37 @@ const updateMyWife = async (req, res) => {
       employment_status,
     } = req.body;
 
-    if (national_id !== undefined && !/^\d{9}$/.test(String(national_id))) {
+    if (
+      national_id !== undefined &&
+      !/^\d{9}$/.test(
+        String(national_id),
+      )
+    ) {
       return res.status(400).json({
-        message: "رقم هوية الزوجة يجب أن يتكون من 9 أرقام.",
+        message:
+          "رقم هوية الزوجة يجب أن يتكون من 9 أرقام.",
       });
     }
 
-    if (national_id !== undefined && national_id !== wife.national_id) {
-      const duplicateWife = await db("wives")
-        .where({
-          family_id: family.id,
-          national_id,
-        })
-        .whereNot({ id: wifeId })
-        .first();
+    if (
+      national_id !== undefined &&
+      national_id !== wife.national_id
+    ) {
+      const duplicateWife =
+        await db("wives")
+          .where({
+            family_id: family.id,
+            national_id,
+          })
+          .whereNot({
+            id: wifeId,
+          })
+          .first();
 
       if (duplicateWife) {
         return res.status(409).json({
-          message: "رقم الهوية مسجل لزوجة أخرى داخل هذه الأسرة.",
+          message:
+            "رقم الهوية مسجل لزوجة أخرى داخل هذه الأسرة.",
         });
       }
     }
@@ -1378,15 +1715,23 @@ const updateMyWife = async (req, res) => {
       employment_status,
     };
 
-    Object.entries(allowedFields).forEach(([key, value]) => {
+    Object.entries(
+      allowedFields,
+    ).forEach(([key, value]) => {
       if (value !== undefined) {
-        updates[key] = typeof value === "string" ? value.trim() : value;
+        updates[key] =
+          typeof value === "string"
+            ? value.trim()
+            : value;
       }
     });
 
-    if (Object.keys(updates).length === 1) {
+    if (
+      Object.keys(updates).length === 1
+    ) {
       return res.status(400).json({
-        message: "لم يتم إرسال أي بيانات للتعديل.",
+        message:
+          "لم يتم إرسال أي بيانات للتعديل.",
       });
     }
 
@@ -1397,67 +1742,87 @@ const updateMyWife = async (req, res) => {
       })
       .update(updates);
 
-    const updatedWife = await db("wives")
-      .where({ id: wifeId })
-      .select(
-        "id",
-        "family_id",
-        "full_name",
-        "national_id",
-        db.raw("DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth"),
-        "phone",
-        "previous_family_name",
-        "employment_status",
-        "created_at",
-        "updated_at",
-      )
-      .first();
+    const updatedWife =
+      await db("wives")
+        .where({ id: wifeId })
+        .select(
+          "id",
+          "family_id",
+          "full_name",
+          "national_id",
+          db.raw("DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth"),
+          "phone",
+          "previous_family_name",
+          "employment_status",
+          "created_at",
+          "updated_at",
+        )
+        .first();
 
     return res.status(200).json({
-      message: "تم تعديل بيانات الزوجة بنجاح.",
+      message:
+        "تم تعديل بيانات الزوجة بنجاح.",
       data: {
         wife: updatedWife,
       },
     });
   } catch (error) {
-    console.error("Update wife error:", error);
+    console.error(
+      "Update wife error:",
+      error,
+    );
 
     return res.status(500).json({
-      message: "حدث خطأ أثناء تعديل بيانات الزوجة.",
+      message:
+        "حدث خطأ أثناء تعديل بيانات الزوجة.",
     });
   }
 };
+
 const deleteMyWife = async (req, res) => {
   try {
-    const wifeId = Number(req.params.wifeId);
+    const wifeId = Number(
+      req.params.wifeId,
+    );
 
-    if (!Number.isInteger(wifeId) || wifeId <= 0) {
+    if (
+      !Number.isInteger(wifeId) ||
+      wifeId <= 0
+    ) {
       return res.status(400).json({
-        message: "رقم الزوجة غير صحيح.",
+        message:
+          "رقم الزوجة غير صحيح.",
       });
     }
 
     const family = await db("families")
       .where({ user_id: req.user.id })
       .whereNull("deleted_at")
-      .select("id", "form_status", "editing_enabled")
+      .select(
+        "id",
+        "form_status",
+        "editing_enabled",
+      )
       .first();
 
     if (!family) {
       return res.status(404).json({
-        message: "سجل الأسرة غير موجود.",
+        message:
+          "سجل الأسرة غير موجود.",
       });
     }
 
     if (!family.editing_enabled) {
       return res.status(403).json({
-        message: "التعديل مغلق حاليًا لهذه الأسرة.",
+        message:
+          "التعديل مغلق حاليًا لهذه الأسرة.",
       });
     }
 
     if (family.form_status !== "draft") {
       return res.status(403).json({
-        message: "لا يمكن حذف بيانات الزوجة بعد اعتماد النموذج.",
+        message:
+          "لا يمكن حذف بيانات الزوجة بعد اعتماد النموذج.",
       });
     }
 
@@ -1466,12 +1831,16 @@ const deleteMyWife = async (req, res) => {
         id: wifeId,
         family_id: family.id,
       })
-      .select("id", "full_name")
+      .select(
+        "id",
+        "full_name",
+      )
       .first();
 
     if (!wife) {
       return res.status(404).json({
-        message: "بيانات الزوجة غير موجودة.",
+        message:
+          "بيانات الزوجة غير موجودة.",
       });
     }
 
@@ -1483,23 +1852,28 @@ const deleteMyWife = async (req, res) => {
       .delete();
 
     return res.status(200).json({
-      message: "تم حذف بيانات الزوجة بنجاح.",
+      message:
+        "تم حذف بيانات الزوجة بنجاح.",
       data: {
         wife: {
           id: wife.id,
-          full_name: wife.full_name,
+          full_name:
+            wife.full_name,
         },
       },
     });
   } catch (error) {
-    console.error("Delete wife error:", error);
+    console.error(
+      "Delete wife error:",
+      error,
+    );
 
     return res.status(500).json({
-      message: "حدث خطأ أثناء حذف بيانات الزوجة.",
+      message:
+        "حدث خطأ أثناء حذف بيانات الزوجة.",
     });
   }
 };
-
 // CHILDREN
 const createMyChild = async (req, res) => {
   try {
@@ -1531,11 +1905,18 @@ const createMyChild = async (req, res) => {
       full_name,
       national_id,
       date_of_birth,
+      gender,
       education_status,
       institution_name,
     } = req.body;
 
-    if (!full_name || !national_id || !date_of_birth || !education_status) {
+    if (
+      !full_name ||
+      !national_id ||
+      !date_of_birth ||
+      !gender ||
+      !education_status
+    ) {
       return res.status(400).json({
         message: "يرجى تعبئة جميع بيانات الابن المطلوبة.",
       });
@@ -1544,6 +1925,14 @@ const createMyChild = async (req, res) => {
     if (!/^\d{9}$/.test(String(national_id))) {
       return res.status(400).json({
         message: "رقم هوية الابن يجب أن يتكون من 9 أرقام.",
+      });
+    }
+
+    const allowedGenders = ["male", "female"];
+
+    if (!allowedGenders.includes(gender)) {
+      return res.status(400).json({
+        message: "الجنس غير صحيح.",
       });
     }
 
@@ -1562,7 +1951,7 @@ const createMyChild = async (req, res) => {
 
     if (
       ["school", "university"].includes(education_status) &&
-      !institution_name
+      !String(institution_name || "").trim()
     ) {
       return res.status(400).json({
         message: "اسم المؤسسة التعليمية مطلوب للمدرسة أو الجامعة.",
@@ -1587,6 +1976,7 @@ const createMyChild = async (req, res) => {
       full_name: full_name.trim(),
       national_id,
       date_of_birth,
+      gender,
       education_status,
       institution_name:
         institution_name && institution_name.trim()
@@ -1601,7 +1991,10 @@ const createMyChild = async (req, res) => {
         "family_id",
         "full_name",
         "national_id",
-        db.raw("DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth"),
+        db.raw(
+          "DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth",
+        ),
+        "gender",
         "education_status",
         "institution_name",
         "created_at",
@@ -1623,6 +2016,7 @@ const createMyChild = async (req, res) => {
     });
   }
 };
+
 const getMyChildren = async (req, res) => {
   try {
     const family = await db("families")
@@ -1644,7 +2038,10 @@ const getMyChildren = async (req, res) => {
         "family_id",
         "full_name",
         "national_id",
-        db.raw("DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth"),
+        db.raw(
+          "DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth",
+        ),
+        "gender",
         "education_status",
         "institution_name",
         "created_at",
@@ -1667,6 +2064,7 @@ const getMyChildren = async (req, res) => {
     });
   }
 };
+
 const getMyChild = async (req, res) => {
   try {
     const childId = Number(req.params.childId);
@@ -1699,7 +2097,10 @@ const getMyChild = async (req, res) => {
         "family_id",
         "full_name",
         "national_id",
-        db.raw("DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth"),
+        db.raw(
+          "DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth",
+        ),
+        "gender",
         "education_status",
         "institution_name",
         "created_at",
@@ -1727,6 +2128,7 @@ const getMyChild = async (req, res) => {
     });
   }
 };
+
 const updateMyChild = async (req, res) => {
   try {
     const childId = Number(req.params.childId);
@@ -1778,13 +2180,28 @@ const updateMyChild = async (req, res) => {
       full_name,
       national_id,
       date_of_birth,
+      gender,
       education_status,
       institution_name,
     } = req.body;
 
-    if (national_id !== undefined && !/^\d{9}$/.test(String(national_id))) {
+    if (
+      national_id !== undefined &&
+      !/^\d{9}$/.test(String(national_id))
+    ) {
       return res.status(400).json({
         message: "رقم هوية الابن يجب أن يتكون من 9 أرقام.",
+      });
+    }
+
+    const allowedGenders = ["male", "female"];
+
+    if (
+      gender !== undefined &&
+      !allowedGenders.includes(gender)
+    ) {
+      return res.status(400).json({
+        message: "الجنس غير صحيح.",
       });
     }
 
@@ -1856,12 +2273,17 @@ const updateMyChild = async (req, res) => {
       updates.date_of_birth = date_of_birth;
     }
 
+    if (gender !== undefined) {
+      updates.gender = gender;
+    }
+
     if (education_status !== undefined) {
       updates.education_status = education_status;
     }
 
     if (institution_name !== undefined) {
-      updates.institution_name = String(institution_name).trim() || null;
+      updates.institution_name =
+        String(institution_name).trim() || null;
     }
 
     if (
@@ -1892,7 +2314,10 @@ const updateMyChild = async (req, res) => {
         "family_id",
         "full_name",
         "national_id",
-        db.raw("DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth"),
+        db.raw(
+          "DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth",
+        ),
+        "gender",
         "education_status",
         "institution_name",
         "created_at",
@@ -1914,6 +2339,7 @@ const updateMyChild = async (req, res) => {
     });
   }
 };
+
 const deleteMyChild = async (req, res) => {
   try {
     const childId = Number(req.params.childId);
@@ -1986,7 +2412,6 @@ const deleteMyChild = async (req, res) => {
     });
   }
 };
-
 // MARRIED DAUGHTERS
 const getMyMarriedDaughters = async (req, res) => {
   try {
@@ -2032,6 +2457,7 @@ const getMyMarriedDaughters = async (req, res) => {
     });
   }
 };
+
 const createMyMarriedDaughter = async (req, res) => {
   try {
     const family = await db("families")
@@ -2058,8 +2484,13 @@ const createMyMarriedDaughter = async (req, res) => {
       });
     }
 
-    const { full_name, national_id, phone, husband_full_name, husband_phone } =
-      req.body;
+    const {
+      full_name,
+      national_id,
+      phone,
+      husband_full_name,
+      husband_phone,
+    } = req.body;
 
     if (
       !full_name ||
@@ -2130,6 +2561,7 @@ const createMyMarriedDaughter = async (req, res) => {
     });
   }
 };
+
 const getMyMarriedDaughter = async (req, res) => {
   try {
     const daughterId = Number(req.params.daughterId);
@@ -2190,6 +2622,7 @@ const getMyMarriedDaughter = async (req, res) => {
     });
   }
 };
+
 const updateMyMarriedDaughter = async (req, res) => {
   try {
     const daughterId = Number(req.params.daughterId);
@@ -2237,10 +2670,18 @@ const updateMyMarriedDaughter = async (req, res) => {
       });
     }
 
-    const { full_name, national_id, phone, husband_full_name, husband_phone } =
-      req.body;
+    const {
+      full_name,
+      national_id,
+      phone,
+      husband_full_name,
+      husband_phone,
+    } = req.body;
 
-    if (national_id !== undefined && !/^\d{9}$/.test(String(national_id))) {
+    if (
+      national_id !== undefined &&
+      !/^\d{9}$/.test(String(national_id))
+    ) {
       return res.status(400).json({
         message: "رقم هوية البنت يجب أن يتكون من 9 أرقام.",
       });
@@ -2329,6 +2770,7 @@ const updateMyMarriedDaughter = async (req, res) => {
     });
   }
 };
+
 const deleteMyMarriedDaughter = async (req, res) => {
   try {
     const daughterId = Number(req.params.daughterId);
@@ -2424,7 +2866,9 @@ const getMySpecialCases = async (req, res) => {
         "family_id",
         "full_name",
         "national_id",
-        db.raw("DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth"),
+        db.raw(
+          "DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth",
+        ),
         "relationship",
         "case_type",
         "case_details",
@@ -2448,6 +2892,7 @@ const getMySpecialCases = async (req, res) => {
     });
   }
 };
+
 const createMySpecialCase = async (req, res) => {
   try {
     const family = await db("families")
@@ -2547,7 +2992,9 @@ const createMySpecialCase = async (req, res) => {
         "family_id",
         "full_name",
         "national_id",
-        db.raw("DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth"),
+        db.raw(
+          "DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth",
+        ),
         "relationship",
         "case_type",
         "case_details",
@@ -2570,6 +3017,7 @@ const createMySpecialCase = async (req, res) => {
     });
   }
 };
+
 const getMySpecialCase = async (req, res) => {
   try {
     const caseId = Number(req.params.caseId);
@@ -2602,7 +3050,9 @@ const getMySpecialCase = async (req, res) => {
         "family_id",
         "full_name",
         "national_id",
-        db.raw("DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth"),
+        db.raw(
+          "DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth",
+        ),
         "relationship",
         "case_type",
         "case_details",
@@ -2631,6 +3081,7 @@ const getMySpecialCase = async (req, res) => {
     });
   }
 };
+
 const updateMySpecialCase = async (req, res) => {
   try {
     const caseId = Number(req.params.caseId);
@@ -2687,7 +3138,10 @@ const updateMySpecialCase = async (req, res) => {
       case_details,
     } = req.body;
 
-    if (national_id !== undefined && !/^\d{9}$/.test(String(national_id))) {
+    if (
+      national_id !== undefined &&
+      !/^\d{9}$/.test(String(national_id))
+    ) {
       return res.status(400).json({
         message: "رقم الهوية يجب أن يتكون من 9 أرقام.",
       });
@@ -2701,17 +3155,24 @@ const updateMySpecialCase = async (req, res) => {
       "pregnant",
     ];
 
-    if (case_type !== undefined && !allowedCaseTypes.includes(case_type)) {
+    if (
+      case_type !== undefined &&
+      !allowedCaseTypes.includes(case_type)
+    ) {
       return res.status(400).json({
         message: "نوع الحالة الخاصة غير صحيح.",
       });
     }
 
     const finalNationalId =
-      national_id !== undefined ? String(national_id) : specialCase.national_id;
+      national_id !== undefined
+        ? String(national_id)
+        : specialCase.national_id;
 
     const finalCaseType =
-      case_type !== undefined ? case_type : specialCase.case_type;
+      case_type !== undefined
+        ? case_type
+        : specialCase.case_type;
 
     const duplicateCase = await db("special_cases")
       .where({
@@ -2774,7 +3235,9 @@ const updateMySpecialCase = async (req, res) => {
         "family_id",
         "full_name",
         "national_id",
-        db.raw("DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth"),
+        db.raw(
+          "DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth",
+        ),
         "relationship",
         "case_type",
         "case_details",
@@ -2797,6 +3260,7 @@ const updateMySpecialCase = async (req, res) => {
     });
   }
 };
+
 const deleteMySpecialCase = async (req, res) => {
   try {
     const caseId = Number(req.params.caseId);

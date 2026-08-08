@@ -31,21 +31,38 @@ const getFamilyEditingPermission = async (family) => {
     };
   }
 
-  const globalEditingEnabled = Boolean(settings.global_editing_enabled);
+  const globalEditingEnabled = Boolean(
+    settings.global_editing_enabled,
+  );
 
   const editingOverride =
-    family.editing_override === null ? null : Boolean(family.editing_override);
+    family.editing_override === null
+      ? null
+      : Boolean(family.editing_override);
 
-  const canEdit =
-    editingOverride !== null ? editingOverride : globalEditingEnabled;
-
+  let canEdit = false;
   let reason = null;
 
-  if (!canEdit) {
+  // الإغلاق العام يمنع الجميع
+  if (!globalEditingEnabled) {
+    canEdit = false;
     reason =
-      editingOverride === false
-        ? "تم إغلاق التعديل لهذه الأسرة من قبل الإدارة."
-        : "التعديل مغلق حاليًا على مستوى النظام.";
+      "التعديل مغلق حاليًا على مستوى النظام.";
+  }
+
+  // إذا التعديل العام مفتوح، نفحص استثناء الأسرة
+  else if (editingOverride !== null) {
+    canEdit = editingOverride;
+
+    if (!canEdit) {
+      reason =
+        "تم إغلاق التعديل لهذه الأسرة من قبل الإدارة.";
+    }
+  }
+
+  // لا يوجد استثناء والتعديل العام مفتوح
+  else {
+    canEdit = true;
   }
 
   return {
@@ -650,7 +667,12 @@ const getMyEditingStatus = async (req, res) => {
     const family = await db("families")
       .where({ user_id: req.user.id })
       .whereNull("deleted_at")
-      .select("id", "form_status", "editing_override", "submitted_at")
+      .select(
+        "id",
+        "form_status",
+        "editing_override",
+        "submitted_at",
+      )
       .first();
 
     if (!family) {
@@ -660,7 +682,10 @@ const getMyEditingStatus = async (req, res) => {
     }
 
     const settings = await db("system_settings")
-      .select("global_editing_enabled")
+      .select(
+        "global_editing_enabled",
+        "registration_closes_at",
+      )
       .first();
 
     if (!settings) {
@@ -669,32 +694,44 @@ const getMyEditingStatus = async (req, res) => {
       });
     }
 
-    const globalEditingEnabled = Boolean(settings.global_editing_enabled);
+    const globalEditingEnabled = Boolean(
+      settings.global_editing_enabled,
+    );
 
     let canEdit = false;
     let reason = null;
 
-    // إذا تم تسليم النموذج، ممنوع التعديل في جميع الحالات
+    // إذا تم تسليم النموذج، ممنوع التعديل
     if (family.form_status === "submitted") {
       canEdit = false;
+
       reason =
         "تم تسليم النموذج ولا يمكن تعديله إلا بعد إعادته إلى المسودة من الإدارة.";
-    } else {
-      // إذا كان Draft نتحقق من الاستثناء
-      if (family.editing_override !== null) {
-        canEdit = Boolean(family.editing_override);
+    }
 
-        if (!canEdit) {
-          reason = "تم إغلاق التعديل لهذه الأسرة من قبل الإدارة.";
-        }
-      } else {
-        // لا يوجد استثناء → نتبع الإعداد العام
-        canEdit = globalEditingEnabled;
+    // الإغلاق العام يمنع جميع الأسر
+    else if (!globalEditingEnabled) {
+      canEdit = false;
 
-        if (!canEdit) {
-          reason = "التعديل مغلق حاليًا على مستوى النظام.";
-        }
+      reason =
+        "التعديل مغلق حاليًا على مستوى النظام.";
+    }
+
+    // إذا التعديل العام مفتوح نفحص استثناء الأسرة
+    else if (family.editing_override !== null) {
+      canEdit = Boolean(
+        family.editing_override,
+      );
+
+      if (!canEdit) {
+        reason =
+          "تم إغلاق التعديل لهذه الأسرة من قبل الإدارة.";
       }
+    }
+
+    // التعديل العام مفتوح ولا يوجد استثناء
+    else {
+      canEdit = true;
     }
 
     return res.status(200).json({
@@ -703,29 +740,39 @@ const getMyEditingStatus = async (req, res) => {
         family_id: family.id,
         form_status: family.form_status,
 
-        global_editing_enabled: globalEditingEnabled,
+        global_editing_enabled:
+          globalEditingEnabled,
+
+        registration_closes_at:
+          settings.registration_closes_at,
 
         editing_override:
           family.editing_override === null
             ? null
-            : Boolean(family.editing_override),
+            : Boolean(
+                family.editing_override,
+              ),
 
         can_edit: canEdit,
 
-        submitted_at: family.submitted_at,
+        submitted_at:
+          family.submitted_at,
 
         reason,
       },
     });
   } catch (error) {
-    console.error("Get editing status error:", error);
+    console.error(
+      "Get editing status error:",
+      error,
+    );
 
     return res.status(500).json({
-      message: "حدث خطأ أثناء جلب حالة التعديل.",
+      message:
+        "حدث خطأ أثناء جلب حالة التعديل.",
     });
   }
 };
-
 const getMyFormCompletion = async (req, res) => {
   try {
     const family = await db("families")

@@ -3,6 +3,59 @@ const path = require("path");
 const fs = require("fs/promises");
 const bcrypt = require("bcryptjs");
 
+// Helper
+const getFamilyEditingPermission = async (family) => {
+  if (!family) {
+    return {
+      canEdit: false,
+      reason: "سجل الأسرة غير موجود.",
+    };
+  }
+
+  if (family.form_status !== "draft") {
+    return {
+      canEdit: false,
+      reason:
+        "تم تسليم النموذج ولا يمكن تعديله إلا بعد إعادته إلى المسودة من الإدارة.",
+    };
+  }
+
+  const settings = await db("system_settings")
+    .select("global_editing_enabled")
+    .first();
+
+  if (!settings) {
+    return {
+      canEdit: false,
+      reason: "إعدادات النظام غير موجودة.",
+    };
+  }
+
+  const globalEditingEnabled = Boolean(settings.global_editing_enabled);
+
+  const editingOverride =
+    family.editing_override === null ? null : Boolean(family.editing_override);
+
+  const canEdit =
+    editingOverride !== null ? editingOverride : globalEditingEnabled;
+
+  let reason = null;
+
+  if (!canEdit) {
+    reason =
+      editingOverride === false
+        ? "تم إغلاق التعديل لهذه الأسرة من قبل الإدارة."
+        : "التعديل مغلق حاليًا على مستوى النظام.";
+  }
+
+  return {
+    canEdit,
+    reason,
+    globalEditingEnabled,
+    editingOverride,
+  };
+};
+
 // FAMILY PROFILE
 const getMyFamily = async (req, res) => {
   try {
@@ -125,15 +178,11 @@ const updateMyFamily = async (req, res) => {
       });
     }
 
-    if (!family.editing_enabled) {
-      return res.status(403).json({
-        message: "التعديل مغلق حاليًا لهذه الأسرة.",
-      });
-    }
+    const editingPermission = await getFamilyEditingPermission(family);
 
-    if (family.form_status !== "draft") {
+    if (!editingPermission.canEdit) {
       return res.status(403).json({
-        message: "لا يمكن تعديل النموذج بعد اعتماده.",
+        message: editingPermission.reason,
       });
     }
 
@@ -221,7 +270,10 @@ const updateMyFamily = async (req, res) => {
       });
     }
 
-    if (national_id !== undefined && national_id !== family.national_id) {
+    if (
+      national_id !== undefined &&
+      String(national_id) !== String(family.national_id)
+    ) {
       const duplicateFamily = await db("families")
         .where({ national_id })
         .whereNot({ id: family.id })
@@ -318,6 +370,7 @@ const updateMyFamily = async (req, res) => {
         "other_job_type",
         "form_status",
         "editing_enabled",
+        "editing_override",
         "updated_by",
         "updated_at",
       )
@@ -328,7 +381,15 @@ const updateMyFamily = async (req, res) => {
       data: {
         family: {
           ...updatedFamily,
+
           editing_enabled: Boolean(updatedFamily.editing_enabled),
+
+          editing_override:
+            updatedFamily.editing_override === null
+              ? null
+              : Boolean(updatedFamily.editing_override),
+
+          can_edit: editingPermission.canEdit,
         },
       },
     });
@@ -351,7 +412,7 @@ const uploadMyPhoto = async (req, res) => {
     const family = await db("families")
       .where({ user_id: req.user.id })
       .whereNull("deleted_at")
-      .select("id", "form_status", "editing_enabled", "personal_photo_path")
+      .select("id", "form_status", "editing_override", "personal_photo_path")
       .first();
 
     if (!family) {
@@ -362,19 +423,13 @@ const uploadMyPhoto = async (req, res) => {
       });
     }
 
-    if (!family.editing_enabled) {
+    const editingPermission = await getFamilyEditingPermission(family);
+
+    if (!editingPermission.canEdit) {
       await fs.unlink(req.file.path).catch(() => {});
 
       return res.status(403).json({
-        message: "التعديل مغلق حاليًا لهذه الأسرة.",
-      });
-    }
-
-    if (family.form_status !== "draft") {
-      await fs.unlink(req.file.path).catch(() => {});
-
-      return res.status(403).json({
-        message: "لا يمكن تغيير الصورة بعد اعتماد النموذج.",
+        message: editingPermission.reason,
       });
     }
 
@@ -399,7 +454,11 @@ const uploadMyPhoto = async (req, res) => {
         oldPhotoRelativePath,
       );
 
-      await fs.unlink(oldPhotoAbsolutePath).catch(() => {});
+      await fs.unlink(oldPhotoAbsolutePath).catch((error) => {
+        if (error.code !== "ENOENT") {
+          console.error("Delete old family photo error:", error);
+        }
+      });
     }
 
     return res.status(200).json({
@@ -425,7 +484,7 @@ const deleteMyPhoto = async (req, res) => {
     const family = await db("families")
       .where({ user_id: req.user.id })
       .whereNull("deleted_at")
-      .select("id", "form_status", "editing_enabled", "personal_photo_path")
+      .select("id", "form_status", "editing_override", "personal_photo_path")
       .first();
 
     if (!family) {
@@ -434,15 +493,11 @@ const deleteMyPhoto = async (req, res) => {
       });
     }
 
-    if (!family.editing_enabled) {
-      return res.status(403).json({
-        message: "التعديل مغلق حاليًا لهذه الأسرة.",
-      });
-    }
+    const editingPermission = await getFamilyEditingPermission(family);
 
-    if (family.form_status !== "draft") {
+    if (!editingPermission.canEdit) {
       return res.status(403).json({
-        message: "لا يمكن حذف الصورة بعد اعتماد النموذج.",
+        message: editingPermission.reason,
       });
     }
 
@@ -492,7 +547,7 @@ const getMyEditingStatus = async (req, res) => {
     const family = await db("families")
       .where({ user_id: req.user.id })
       .whereNull("deleted_at")
-      .select("id", "form_status", "editing_enabled", "submitted_at")
+      .select("id", "form_status", "editing_override", "submitted_at")
       .first();
 
     if (!family) {
@@ -501,22 +556,62 @@ const getMyEditingStatus = async (req, res) => {
       });
     }
 
-    const canEdit =
-      Boolean(family.editing_enabled) && family.form_status === "draft";
+    const settings = await db("system_settings")
+      .select("global_editing_enabled")
+      .first();
+
+    if (!settings) {
+      return res.status(500).json({
+        message: "إعدادات النظام غير موجودة.",
+      });
+    }
+
+    const globalEditingEnabled = Boolean(settings.global_editing_enabled);
+
+    let canEdit = false;
+    let reason = null;
+
+    // إذا تم تسليم النموذج، ممنوع التعديل في جميع الحالات
+    if (family.form_status === "submitted") {
+      canEdit = false;
+      reason =
+        "تم تسليم النموذج ولا يمكن تعديله إلا بعد إعادته إلى المسودة من الإدارة.";
+    } else {
+      // إذا كان Draft نتحقق من الاستثناء
+      if (family.editing_override !== null) {
+        canEdit = Boolean(family.editing_override);
+
+        if (!canEdit) {
+          reason = "تم إغلاق التعديل لهذه الأسرة من قبل الإدارة.";
+        }
+      } else {
+        // لا يوجد استثناء → نتبع الإعداد العام
+        canEdit = globalEditingEnabled;
+
+        if (!canEdit) {
+          reason = "التعديل مغلق حاليًا على مستوى النظام.";
+        }
+      }
+    }
 
     return res.status(200).json({
       message: "تم جلب حالة التعديل بنجاح.",
       data: {
         family_id: family.id,
         form_status: family.form_status,
-        editing_enabled: Boolean(family.editing_enabled),
+
+        global_editing_enabled: globalEditingEnabled,
+
+        editing_override:
+          family.editing_override === null
+            ? null
+            : Boolean(family.editing_override),
+
         can_edit: canEdit,
+
         submitted_at: family.submitted_at,
-        reason: canEdit
-          ? null
-          : family.form_status === "submitted"
-            ? "تم اعتماد النموذج ولا يمكن تعديله."
-            : "التعديل مغلق حاليًا لهذه الأسرة.",
+
+        reason,
       },
     });
   } catch (error) {
@@ -539,6 +634,8 @@ const getMyFormCompletion = async (req, res) => {
         message: "سجل الأسرة غير موجود.",
       });
     }
+
+    const editingPermission = await getFamilyEditingPermission(family);
 
     const [housing, wivesCount, childrenCount] = await Promise.all([
       db("family_housing").where({ family_id: family.id }).first(),
@@ -617,21 +714,33 @@ const getMyFormCompletion = async (req, res) => {
       }));
 
     const isReadyToSubmit =
-      missingSections.length === 0 &&
-      family.form_status === "draft" &&
-      Boolean(family.editing_enabled);
+      missingSections.length === 0 && editingPermission.canEdit;
 
     return res.status(200).json({
       message: "تم جلب حالة اكتمال النموذج بنجاح.",
       data: {
         family_id: family.id,
+
         percentage,
+
         completed_required_sections: completedRequiredSections.length,
+
         total_required_sections: requiredSections.length,
+
         is_ready_to_submit: isReadyToSubmit,
+
         form_status: family.form_status,
-        editing_enabled: Boolean(family.editing_enabled),
+
+        global_editing_enabled: editingPermission.globalEditingEnabled ?? null,
+
+        editing_override: editingPermission.editingOverride ?? null,
+
+        can_edit: editingPermission.canEdit,
+
+        editing_reason: editingPermission.reason,
+
         sections,
+
         missing_sections: missingSections,
       },
     });
@@ -658,13 +767,15 @@ const submitMyFamilyForm = async (req, res) => {
 
     if (family.form_status === "submitted") {
       return res.status(400).json({
-        message: "تم اعتماد النموذج مسبقًا.",
+        message: "تم تسليم النموذج مسبقًا.",
       });
     }
 
-    if (!family.editing_enabled) {
+    const editingPermission = await getFamilyEditingPermission(family);
+
+    if (!editingPermission.canEdit) {
       return res.status(403).json({
-        message: "التعديل مغلق حاليًا لهذه الأسرة.",
+        message: editingPermission.reason,
       });
     }
 
@@ -729,7 +840,7 @@ const submitMyFamilyForm = async (req, res) => {
 
     if (missingFields.length > 0) {
       return res.status(422).json({
-        message: "لا يمكن اعتماد النموذج قبل استكمال البيانات المطلوبة.",
+        message: "لا يمكن تسليم النموذج قبل استكمال البيانات المطلوبة.",
         data: {
           missing_fields: missingFields,
         },
@@ -738,7 +849,11 @@ const submitMyFamilyForm = async (req, res) => {
 
     await db("families").where({ id: family.id }).update({
       form_status: "submitted",
+
+      // نتركه false للتوافق مع النظام القديم،
+      // لكن قرار التعديل الحقيقي أصبح من الـ helper.
       editing_enabled: false,
+
       submitted_at: db.fn.now(),
       updated_by: req.user.id,
       updated_at: db.fn.now(),
@@ -746,16 +861,32 @@ const submitMyFamilyForm = async (req, res) => {
 
     const submittedFamily = await db("families")
       .where({ id: family.id })
-      .select("id", "form_status", "editing_enabled", "submitted_at")
+      .select(
+        "id",
+        "form_status",
+        "editing_enabled",
+        "editing_override",
+        "submitted_at",
+      )
       .first();
 
     return res.status(200).json({
-      message: "تم اعتماد نموذج الأسرة بنجاح.",
+      message: "تم تسليم نموذج الأسرة بنجاح.",
       data: {
         family: {
           id: submittedFamily.id,
+
           form_status: submittedFamily.form_status,
+
           editing_enabled: Boolean(submittedFamily.editing_enabled),
+
+          editing_override:
+            submittedFamily.editing_override === null
+              ? null
+              : Boolean(submittedFamily.editing_override),
+
+          can_edit: false,
+
           submitted_at: submittedFamily.submitted_at,
         },
       },
@@ -764,7 +895,7 @@ const submitMyFamilyForm = async (req, res) => {
     console.error("Submit family form error:", error);
 
     return res.status(500).json({
-      message: "حدث خطأ أثناء اعتماد نموذج الأسرة.",
+      message: "حدث خطأ أثناء تسليم نموذج الأسرة.",
     });
   }
 };
@@ -781,7 +912,7 @@ const deleteMyFamily = async (req, res) => {
     const family = await db("families")
       .where({ user_id: req.user.id })
       .whereNull("deleted_at")
-      .select("id", "user_id", "full_name", "form_status", "editing_enabled")
+      .select("id", "user_id", "full_name", "form_status", "editing_override")
       .first();
 
     if (!family) {
@@ -790,15 +921,11 @@ const deleteMyFamily = async (req, res) => {
       });
     }
 
-    if (!family.editing_enabled) {
-      return res.status(403).json({
-        message: "لا يمكن حذف الأسرة لأن التعديل مغلق حاليًا.",
-      });
-    }
+    const editingPermission = await getFamilyEditingPermission(family);
 
-    if (family.form_status !== "draft") {
+    if (!editingPermission.canEdit) {
       return res.status(403).json({
-        message: "لا يمكن حذف الأسرة بعد اعتماد النموذج.",
+        message: editingPermission.reason,
       });
     }
 
@@ -825,7 +952,10 @@ const deleteMyFamily = async (req, res) => {
       await trx("families").where({ id: family.id }).update({
         deleted_at: trx.fn.now(),
         deleted_by: req.user.id,
+
+        // نبقيه false للتوافق مع النظام القديم.
         editing_enabled: false,
+
         updated_by: req.user.id,
         updated_at: trx.fn.now(),
       });
@@ -892,7 +1022,7 @@ const upsertMyHousing = async (req, res) => {
     const family = await db("families")
       .where({ user_id: req.user.id })
       .whereNull("deleted_at")
-      .select("id", "form_status", "editing_enabled")
+      .select("id", "form_status", "editing_override")
       .first();
 
     if (!family) {
@@ -901,15 +1031,11 @@ const upsertMyHousing = async (req, res) => {
       });
     }
 
-    if (!family.editing_enabled) {
-      return res.status(403).json({
-        message: "التعديل مغلق حاليًا لهذه الأسرة.",
-      });
-    }
+    const editingPermission = await getFamilyEditingPermission(family);
 
-    if (family.form_status !== "draft") {
+    if (!editingPermission.canEdit) {
       return res.status(403).json({
-        message: "لا يمكن تعديل بيانات السكن بعد اعتماد النموذج.",
+        message: editingPermission.reason,
       });
     }
 
@@ -1021,7 +1147,7 @@ const deleteMyHousing = async (req, res) => {
     const family = await db("families")
       .where({ user_id: req.user.id })
       .whereNull("deleted_at")
-      .select("id", "form_status", "editing_enabled")
+      .select("id", "form_status", "editing_override")
       .first();
 
     if (!family) {
@@ -1030,15 +1156,11 @@ const deleteMyHousing = async (req, res) => {
       });
     }
 
-    if (!family.editing_enabled) {
-      return res.status(403).json({
-        message: "التعديل مغلق حاليًا لهذه الأسرة.",
-      });
-    }
+    const editingPermission = await getFamilyEditingPermission(family);
 
-    if (family.form_status !== "draft") {
+    if (!editingPermission.canEdit) {
       return res.status(403).json({
-        message: "لا يمكن حذف بيانات السكن بعد اعتماد النموذج.",
+        message: editingPermission.reason,
       });
     }
 
@@ -1073,7 +1195,7 @@ const createMyWife = async (req, res) => {
     const family = await db("families")
       .where({ user_id: req.user.id })
       .whereNull("deleted_at")
-      .select("id", "marital_status", "form_status", "editing_enabled")
+      .select("id", "marital_status", "form_status", "editing_override")
       .first();
 
     if (!family) {
@@ -1082,15 +1204,11 @@ const createMyWife = async (req, res) => {
       });
     }
 
-    if (!family.editing_enabled) {
-      return res.status(403).json({
-        message: "التعديل مغلق حاليًا لهذه الأسرة.",
-      });
-    }
+    const editingPermission = await getFamilyEditingPermission(family);
 
-    if (family.form_status !== "draft") {
+    if (!editingPermission.canEdit) {
       return res.status(403).json({
-        message: "لا يمكن إضافة زوجة بعد اعتماد النموذج.",
+        message: editingPermission.reason,
       });
     }
 
@@ -1300,7 +1418,7 @@ const updateMyWife = async (req, res) => {
     const family = await db("families")
       .where({ user_id: req.user.id })
       .whereNull("deleted_at")
-      .select("id", "form_status", "editing_enabled")
+      .select("id", "form_status", "editing_override")
       .first();
 
     if (!family) {
@@ -1309,15 +1427,11 @@ const updateMyWife = async (req, res) => {
       });
     }
 
-    if (!family.editing_enabled) {
-      return res.status(403).json({
-        message: "التعديل مغلق حاليًا لهذه الأسرة.",
-      });
-    }
+    const editingPermission = await getFamilyEditingPermission(family);
 
-    if (family.form_status !== "draft") {
+    if (!editingPermission.canEdit) {
       return res.status(403).json({
-        message: "لا يمكن تعديل بيانات الزوجة بعد اعتماد النموذج.",
+        message: editingPermission.reason,
       });
     }
 
@@ -1349,7 +1463,10 @@ const updateMyWife = async (req, res) => {
       });
     }
 
-    if (national_id !== undefined && national_id !== wife.national_id) {
+    if (
+      national_id !== undefined &&
+      String(national_id) !== String(wife.national_id)
+    ) {
       const duplicateWife = await db("wives")
         .where({
           family_id: family.id,
@@ -1440,7 +1557,7 @@ const deleteMyWife = async (req, res) => {
     const family = await db("families")
       .where({ user_id: req.user.id })
       .whereNull("deleted_at")
-      .select("id", "form_status", "editing_enabled")
+      .select("id", "form_status", "editing_override")
       .first();
 
     if (!family) {
@@ -1449,15 +1566,11 @@ const deleteMyWife = async (req, res) => {
       });
     }
 
-    if (!family.editing_enabled) {
-      return res.status(403).json({
-        message: "التعديل مغلق حاليًا لهذه الأسرة.",
-      });
-    }
+    const editingPermission = await getFamilyEditingPermission(family);
 
-    if (family.form_status !== "draft") {
+    if (!editingPermission.canEdit) {
       return res.status(403).json({
-        message: "لا يمكن حذف بيانات الزوجة بعد اعتماد النموذج.",
+        message: editingPermission.reason,
       });
     }
 
@@ -1506,7 +1619,7 @@ const createMyChild = async (req, res) => {
     const family = await db("families")
       .where({ user_id: req.user.id })
       .whereNull("deleted_at")
-      .select("id", "form_status", "editing_enabled")
+      .select("id", "form_status", "editing_override")
       .first();
 
     if (!family) {
@@ -1515,15 +1628,11 @@ const createMyChild = async (req, res) => {
       });
     }
 
-    if (!family.editing_enabled) {
-      return res.status(403).json({
-        message: "التعديل مغلق حاليًا لهذه الأسرة.",
-      });
-    }
+    const editingPermission = await getFamilyEditingPermission(family);
 
-    if (family.form_status !== "draft") {
+    if (!editingPermission.canEdit) {
       return res.status(403).json({
-        message: "لا يمكن إضافة ابن بعد اعتماد النموذج.",
+        message: editingPermission.reason,
       });
     }
 
@@ -1740,7 +1849,7 @@ const updateMyChild = async (req, res) => {
     const family = await db("families")
       .where({ user_id: req.user.id })
       .whereNull("deleted_at")
-      .select("id", "form_status", "editing_enabled")
+      .select("id", "form_status", "editing_override")
       .first();
 
     if (!family) {
@@ -1749,15 +1858,11 @@ const updateMyChild = async (req, res) => {
       });
     }
 
-    if (!family.editing_enabled) {
-      return res.status(403).json({
-        message: "التعديل مغلق حاليًا لهذه الأسرة.",
-      });
-    }
+    const editingPermission = await getFamilyEditingPermission(family);
 
-    if (family.form_status !== "draft") {
+    if (!editingPermission.canEdit) {
       return res.status(403).json({
-        message: "لا يمكن تعديل بيانات الابن بعد اعتماد النموذج.",
+        message: editingPermission.reason,
       });
     }
 
@@ -1878,6 +1983,8 @@ const updateMyChild = async (req, res) => {
       });
     }
 
+    updates.updated_at = db.fn.now();
+
     await db("children")
       .where({
         id: childId,
@@ -1927,7 +2034,7 @@ const deleteMyChild = async (req, res) => {
     const family = await db("families")
       .where({ user_id: req.user.id })
       .whereNull("deleted_at")
-      .select("id", "form_status", "editing_enabled")
+      .select("id", "form_status", "editing_override")
       .first();
 
     if (!family) {
@@ -1936,15 +2043,11 @@ const deleteMyChild = async (req, res) => {
       });
     }
 
-    if (!family.editing_enabled) {
-      return res.status(403).json({
-        message: "التعديل مغلق حاليًا لهذه الأسرة.",
-      });
-    }
+    const editingPermission = await getFamilyEditingPermission(family);
 
-    if (family.form_status !== "draft") {
+    if (!editingPermission.canEdit) {
       return res.status(403).json({
-        message: "لا يمكن حذف بيانات الابن بعد اعتماد النموذج.",
+        message: editingPermission.reason,
       });
     }
 
@@ -2037,7 +2140,7 @@ const createMyMarriedDaughter = async (req, res) => {
     const family = await db("families")
       .where({ user_id: req.user.id })
       .whereNull("deleted_at")
-      .select("id", "form_status", "editing_enabled")
+      .select("id", "form_status", "editing_override")
       .first();
 
     if (!family) {
@@ -2046,15 +2149,11 @@ const createMyMarriedDaughter = async (req, res) => {
       });
     }
 
-    if (!family.editing_enabled) {
-      return res.status(403).json({
-        message: "التعديل مغلق حاليًا لهذه الأسرة.",
-      });
-    }
+    const editingPermission = await getFamilyEditingPermission(family);
 
-    if (family.form_status !== "draft") {
+    if (!editingPermission.canEdit) {
       return res.status(403).json({
-        message: "لا يمكن إضافة بنت متزوجة بعد اعتماد النموذج.",
+        message: editingPermission.reason,
       });
     }
 
@@ -2203,7 +2302,7 @@ const updateMyMarriedDaughter = async (req, res) => {
     const family = await db("families")
       .where({ user_id: req.user.id })
       .whereNull("deleted_at")
-      .select("id", "form_status", "editing_enabled")
+      .select("id", "form_status", "editing_override")
       .first();
 
     if (!family) {
@@ -2212,15 +2311,11 @@ const updateMyMarriedDaughter = async (req, res) => {
       });
     }
 
-    if (!family.editing_enabled) {
-      return res.status(403).json({
-        message: "التعديل مغلق حاليًا لهذه الأسرة.",
-      });
-    }
+    const editingPermission = await getFamilyEditingPermission(family);
 
-    if (family.form_status !== "draft") {
+    if (!editingPermission.canEdit) {
       return res.status(403).json({
-        message: "لا يمكن تعديل بيانات البنت المتزوجة بعد اعتماد النموذج.",
+        message: editingPermission.reason,
       });
     }
 
@@ -2293,6 +2388,8 @@ const updateMyMarriedDaughter = async (req, res) => {
       });
     }
 
+    updates.updated_at = db.fn.now();
+
     await db("married_daughters")
       .where({
         id: daughterId,
@@ -2342,7 +2439,7 @@ const deleteMyMarriedDaughter = async (req, res) => {
     const family = await db("families")
       .where({ user_id: req.user.id })
       .whereNull("deleted_at")
-      .select("id", "form_status", "editing_enabled")
+      .select("id", "form_status", "editing_override")
       .first();
 
     if (!family) {
@@ -2351,15 +2448,11 @@ const deleteMyMarriedDaughter = async (req, res) => {
       });
     }
 
-    if (!family.editing_enabled) {
-      return res.status(403).json({
-        message: "التعديل مغلق حاليًا لهذه الأسرة.",
-      });
-    }
+    const editingPermission = await getFamilyEditingPermission(family);
 
-    if (family.form_status !== "draft") {
+    if (!editingPermission.canEdit) {
       return res.status(403).json({
-        message: "لا يمكن حذف بيانات البنت المتزوجة بعد اعتماد النموذج.",
+        message: editingPermission.reason,
       });
     }
 
@@ -2453,7 +2546,7 @@ const createMySpecialCase = async (req, res) => {
     const family = await db("families")
       .where({ user_id: req.user.id })
       .whereNull("deleted_at")
-      .select("id", "form_status", "editing_enabled")
+      .select("id", "form_status", "editing_override")
       .first();
 
     if (!family) {
@@ -2462,15 +2555,11 @@ const createMySpecialCase = async (req, res) => {
       });
     }
 
-    if (!family.editing_enabled) {
-      return res.status(403).json({
-        message: "التعديل مغلق حاليًا لهذه الأسرة.",
-      });
-    }
+    const editingPermission = await getFamilyEditingPermission(family);
 
-    if (family.form_status !== "draft") {
+    if (!editingPermission.canEdit) {
       return res.status(403).json({
-        message: "لا يمكن إضافة حالة خاصة بعد اعتماد النموذج.",
+        message: editingPermission.reason,
       });
     }
 
@@ -2644,7 +2733,7 @@ const updateMySpecialCase = async (req, res) => {
     const family = await db("families")
       .where({ user_id: req.user.id })
       .whereNull("deleted_at")
-      .select("id", "form_status", "editing_enabled")
+      .select("id", "form_status", "editing_override")
       .first();
 
     if (!family) {
@@ -2653,15 +2742,11 @@ const updateMySpecialCase = async (req, res) => {
       });
     }
 
-    if (!family.editing_enabled) {
-      return res.status(403).json({
-        message: "التعديل مغلق حاليًا لهذه الأسرة.",
-      });
-    }
+    const editingPermission = await getFamilyEditingPermission(family);
 
-    if (family.form_status !== "draft") {
+    if (!editingPermission.canEdit) {
       return res.status(403).json({
-        message: "لا يمكن تعديل الحالة الخاصة بعد اعتماد النموذج.",
+        message: editingPermission.reason,
       });
     }
 
@@ -2760,6 +2845,8 @@ const updateMySpecialCase = async (req, res) => {
       });
     }
 
+    updates.updated_at = db.fn.now();
+
     await db("special_cases")
       .where({
         id: caseId,
@@ -2810,7 +2897,7 @@ const deleteMySpecialCase = async (req, res) => {
     const family = await db("families")
       .where({ user_id: req.user.id })
       .whereNull("deleted_at")
-      .select("id", "form_status", "editing_enabled")
+      .select("id", "form_status", "editing_override")
       .first();
 
     if (!family) {
@@ -2819,15 +2906,11 @@ const deleteMySpecialCase = async (req, res) => {
       });
     }
 
-    if (!family.editing_enabled) {
-      return res.status(403).json({
-        message: "التعديل مغلق حاليًا لهذه الأسرة.",
-      });
-    }
+    const editingPermission = await getFamilyEditingPermission(family);
 
-    if (family.form_status !== "draft") {
+    if (!editingPermission.canEdit) {
       return res.status(403).json({
-        message: "لا يمكن حذف الحالة الخاصة بعد اعتماد النموذج.",
+        message: editingPermission.reason,
       });
     }
 

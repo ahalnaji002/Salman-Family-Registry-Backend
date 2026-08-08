@@ -2,6 +2,7 @@ const db = require("../config/database");
 const bcrypt = require("bcryptjs");
 const ExcelJS = require("exceljs");
 
+// Admin Dashboard
 const getDashboardStats = async (req, res) => {
   try {
     const [
@@ -48,6 +49,8 @@ const getDashboardStats = async (req, res) => {
     });
   }
 };
+
+// Admin Families
 const getFamilies = async (req, res) => {
   try {
     const page = Math.max(Number(req.query.page) || 1, 1);
@@ -767,7 +770,7 @@ const restoreFamily = async (req, res) => {
 const updateFamilyEditingStatus = async (req, res) => {
   try {
     const familyId = Number(req.params.familyId);
-    const { editing_enabled } = req.body;
+    const { editing_override } = req.body;
 
     if (!Number.isInteger(familyId) || familyId <= 0) {
       return res.status(400).json({
@@ -775,16 +778,16 @@ const updateFamilyEditingStatus = async (req, res) => {
       });
     }
 
-    if (typeof editing_enabled !== "boolean") {
+    if (editing_override !== null && typeof editing_override !== "boolean") {
       return res.status(400).json({
-        message: "قيمة editing_enabled يجب أن تكون true أو false.",
+        message: "قيمة editing_override يجب أن تكون true أو false أو null.",
       });
     }
 
     const family = await db("families")
       .where({ id: familyId })
       .whereNull("deleted_at")
-      .select("id", "full_name", "editing_enabled")
+      .select("id", "full_name", "form_status", "editing_override")
       .first();
 
     if (!family) {
@@ -793,21 +796,37 @@ const updateFamilyEditingStatus = async (req, res) => {
       });
     }
 
+    if (family.form_status === "submitted") {
+      return res.status(403).json({
+        message:
+          "لا يمكن فتح التعديل لأسرة تم تسليم نموذجها. أعد النموذج إلى draft أولًا.",
+      });
+    }
+
     await db("families").where({ id: familyId }).update({
-      editing_enabled,
+      editing_override,
       updated_by: req.user.id,
       updated_at: db.fn.now(),
     });
 
+    let message;
+
+    if (editing_override === true) {
+      message = "تم فتح التعديل لهذه الأسرة كاستثناء.";
+    } else if (editing_override === false) {
+      message = "تم إغلاق التعديل لهذه الأسرة كاستثناء.";
+    } else {
+      message = "تم إلغاء الاستثناء وستتبع الأسرة إعداد التعديل العام.";
+    }
+
     return res.status(200).json({
-      message: editing_enabled
-        ? "تم فتح التعديل للأسرة بنجاح."
-        : "تم إغلاق التعديل للأسرة بنجاح.",
+      message,
       data: {
         family: {
           id: family.id,
           full_name: family.full_name,
-          editing_enabled,
+          form_status: family.form_status,
+          editing_override,
           updated_by: req.user.id,
         },
       },
@@ -816,7 +835,7 @@ const updateFamilyEditingStatus = async (req, res) => {
     console.error("Update family editing status error:", error);
 
     return res.status(500).json({
-      message: "حدث خطأ أثناء تحديث حالة التعديل.",
+      message: "حدث خطأ أثناء تحديث حالة تعديل الأسرة.",
     });
   }
 };
@@ -889,6 +908,8 @@ const updateFamilyFormStatus = async (req, res) => {
     });
   }
 };
+
+// Export
 const exportFamiliesExcel = async (req, res) => {
   try {
     const status = req.query.status?.trim() || "";
@@ -1211,8 +1232,156 @@ const exportFamiliesExcel = async (req, res) => {
     });
   }
 };
+
+// system_settings
+const getSystemSettings = async (req, res) => {
+  try {
+    const settings = await db("system_settings")
+      .select(
+        "id",
+        "registration_enabled",
+        "global_editing_enabled",
+        "system_name",
+        "registration_closes_at",
+        "updated_by",
+        "created_at",
+        "updated_at",
+      )
+      .first();
+
+    if (!settings) {
+      return res.status(404).json({
+        message: "إعدادات النظام غير موجودة.",
+      });
+    }
+
+    return res.status(200).json({
+      message: "تم جلب إعدادات النظام بنجاح.",
+      data: {
+        settings: {
+          ...settings,
+          registration_enabled: Boolean(settings.registration_enabled),
+          global_editing_enabled: Boolean(settings.global_editing_enabled),
+        },
+      },
+    });
+  } catch (error) {
+    console.error("Get system settings error:", error);
+
+    return res.status(500).json({
+      message: "حدث خطأ أثناء جلب إعدادات النظام.",
+    });
+  }
+};
+const updateSystemSettings = async (req, res) => {
+  try {
+    const {
+      registration_enabled,
+      global_editing_enabled,
+      system_name,
+      registration_closes_at,
+    } = req.body;
+
+    const settings = await db("system_settings").first();
+
+    if (!settings) {
+      return res.status(404).json({
+        message: "إعدادات النظام غير موجودة.",
+      });
+    }
+
+    if (
+      registration_enabled !== undefined &&
+      typeof registration_enabled !== "boolean"
+    ) {
+      return res.status(400).json({
+        message: "قيمة registration_enabled يجب أن تكون true أو false.",
+      });
+    }
+
+    if (
+      global_editing_enabled !== undefined &&
+      typeof global_editing_enabled !== "boolean"
+    ) {
+      return res.status(400).json({
+        message: "قيمة global_editing_enabled يجب أن تكون true أو false.",
+      });
+    }
+
+    if (system_name !== undefined && !String(system_name).trim()) {
+      return res.status(400).json({
+        message: "اسم النظام لا يمكن أن يكون فارغًا.",
+      });
+    }
+
+    const updates = {
+      updated_by: req.user.id,
+      updated_at: db.fn.now(),
+    };
+
+    if (registration_enabled !== undefined) {
+      updates.registration_enabled = registration_enabled;
+    }
+
+    if (global_editing_enabled !== undefined) {
+      updates.global_editing_enabled = global_editing_enabled;
+    }
+
+    if (system_name !== undefined) {
+      updates.system_name = String(system_name).trim();
+    }
+
+    if (registration_closes_at !== undefined) {
+      updates.registration_closes_at = registration_closes_at || null;
+    }
+
+    if (Object.keys(updates).length === 2) {
+      return res.status(400).json({
+        message: "لم يتم إرسال أي إعدادات للتعديل.",
+      });
+    }
+
+    await db("system_settings").where({ id: settings.id }).update(updates);
+
+    const updatedSettings = await db("system_settings")
+      .where({ id: settings.id })
+      .select(
+        "id",
+        "registration_enabled",
+        "global_editing_enabled",
+        "system_name",
+        "registration_closes_at",
+        "updated_by",
+        "created_at",
+        "updated_at",
+      )
+      .first();
+
+    return res.status(200).json({
+      message: "تم تعديل إعدادات النظام بنجاح.",
+      data: {
+        settings: {
+          ...updatedSettings,
+          registration_enabled: Boolean(updatedSettings.registration_enabled),
+          global_editing_enabled: Boolean(
+            updatedSettings.global_editing_enabled,
+          ),
+        },
+      },
+    });
+  } catch (error) {
+    console.error("Update system settings error:", error);
+
+    return res.status(500).json({
+      message: "حدث خطأ أثناء تعديل إعدادات النظام.",
+    });
+  }
+};
 module.exports = {
+  // Admin Dashboard
   getDashboardStats,
+
+  // Admin Families
   getFamilies,
   getFamilyDetails,
   createFamily,
@@ -1221,5 +1390,11 @@ module.exports = {
   restoreFamily,
   updateFamilyEditingStatus,
   updateFamilyFormStatus,
+
+  // Export
   exportFamiliesExcel,
+
+  //Settings
+  getSystemSettings,
+  updateSystemSettings,
 };

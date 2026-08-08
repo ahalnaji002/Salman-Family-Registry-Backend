@@ -54,6 +54,7 @@ const getFamilyEditingPermission = async (family) => {
     editingOverride,
   };
 };
+
 const checkNationalIdGlobally = async ({
   nationalId,
   excludeTable = null,
@@ -148,12 +149,15 @@ const getDashboardStats = async (req, res) => {
 const getFamilies = async (req, res) => {
   try {
     const page = Math.max(Number(req.query.page) || 1, 1);
+
     const limit = Math.min(Math.max(Number(req.query.limit) || 10, 1), 100);
 
     const offset = (page - 1) * limit;
 
     const search = req.query.search?.trim() || "";
+
     const status = req.query.status?.trim() || "";
+
     const editingEnabled = req.query.editing_enabled;
 
     const allowedStatuses = ["draft", "submitted"];
@@ -210,7 +214,11 @@ const getFamilies = async (req, res) => {
         "families.full_name",
         "families.national_id",
         "families.phone",
-        "families.date_of_birth",
+
+        db.raw(
+          "DATE_FORMAT(families.date_of_birth, '%Y-%m-%d') as date_of_birth",
+        ),
+
         "families.marital_status",
         "families.income_category",
         "families.work_status",
@@ -230,6 +238,7 @@ const getFamilies = async (req, res) => {
     ]);
 
     const total = Number(countResult.count);
+
     const totalPages = Math.ceil(total / limit);
 
     return res.status(200).json({
@@ -237,20 +246,28 @@ const getFamilies = async (req, res) => {
       data: {
         families: families.map((family) => ({
           ...family,
+
           editing_enabled: Boolean(family.editing_enabled),
+
           user_is_active: Boolean(family.user_is_active),
         })),
+
         pagination: {
           page,
           limit,
           total,
           total_pages: totalPages,
+
           has_next_page: page < totalPages,
+
           has_previous_page: page > 1,
         },
+
         filters: {
           search: search || null,
+
           status: status || null,
+
           editing_enabled:
             editingEnabled === undefined ? null : editingEnabled === "true",
         },
@@ -264,6 +281,7 @@ const getFamilies = async (req, res) => {
     });
   }
 };
+
 const getFamilyDetails = async (req, res) => {
   try {
     const familyId = Number(req.params.familyId);
@@ -283,7 +301,11 @@ const getFamilyDetails = async (req, res) => {
         "families.user_id",
         "families.full_name",
         "families.national_id",
-        "families.date_of_birth",
+
+        db.raw(
+          "DATE_FORMAT(families.date_of_birth, '%Y-%m-%d') as date_of_birth",
+        ),
+
         "families.phone",
         "families.blood_type",
         "families.marital_status",
@@ -310,20 +332,34 @@ const getFamilyDetails = async (req, res) => {
 
     const [housing, wives, children, marriedDaughters, specialCases] =
       await Promise.all([
-        db("family_housing").where({ family_id: familyId }).first(),
+        db("family_housing")
+          .where({
+            family_id: familyId,
+          })
+          .first(),
 
-        db("wives").where({ family_id: familyId }).orderBy("created_at", "asc"),
+        db("wives")
+          .where({
+            family_id: familyId,
+          })
+          .orderBy("created_at", "asc"),
 
         db("children")
-          .where({ family_id: familyId })
+          .where({
+            family_id: familyId,
+          })
           .orderBy("date_of_birth", "asc"),
 
         db("married_daughters")
-          .where({ family_id: familyId })
+          .where({
+            family_id: familyId,
+          })
           .orderBy("created_at", "asc"),
 
         db("special_cases")
-          .where({ family_id: familyId })
+          .where({
+            family_id: familyId,
+          })
           .orderBy("created_at", "asc"),
       ]);
 
@@ -332,18 +368,28 @@ const getFamilyDetails = async (req, res) => {
       data: {
         family: {
           ...family,
+
           editing_enabled: Boolean(family.editing_enabled),
+
           user_is_active: Boolean(family.user_is_active),
         },
+
         housing: housing || null,
+
         wives,
         children,
+
         married_daughters: marriedDaughters,
+
         special_cases: specialCases,
+
         summary: {
           wives_count: wives.length,
+
           children_count: children.length,
+
           married_daughters_count: marriedDaughters.length,
+
           special_cases_count: specialCases.length,
         },
       },
@@ -572,6 +618,7 @@ const createFamily = async (req, res) => {
     });
   }
 };
+
 const updateFamily = async (req, res) => {
   try {
     const familyId = Number(req.params.familyId);
@@ -817,7 +864,11 @@ const updateFamily = async (req, res) => {
       if (family.user_id && Object.keys(userUpdates).length > 0) {
         userUpdates.updated_at = trx.fn.now();
 
-        await trx("users").where({ id: family.user_id }).update(userUpdates);
+        await trx("users")
+          .where({
+            id: family.user_id,
+          })
+          .update(userUpdates);
       }
     });
 
@@ -849,7 +900,9 @@ const updateFamily = async (req, res) => {
       data: {
         family: {
           ...updatedFamily,
+
           editing_enabled: Boolean(updatedFamily.editing_enabled),
+
           editing_override:
             updatedFamily.editing_override === null
               ? null
@@ -928,6 +981,7 @@ const deleteFamily = async (req, res) => {
     });
   }
 };
+
 const restoreFamily = async (req, res) => {
   try {
     const familyId = Number(req.params.familyId);
@@ -986,6 +1040,7 @@ const restoreFamily = async (req, res) => {
     });
   }
 };
+
 const updateFamilyEditingStatus = async (req, res) => {
   try {
     const familyId = Number(req.params.familyId);
@@ -1006,7 +1061,14 @@ const updateFamilyEditingStatus = async (req, res) => {
     const family = await db("families")
       .where({ id: familyId })
       .whereNull("deleted_at")
-      .select("id", "full_name", "form_status", "editing_override")
+      .select(
+        "id",
+        "full_name",
+        "form_status",
+        "editing_override",
+        "editing_enabled",
+        "submitted_at",
+      )
       .first();
 
     if (!family) {
@@ -1015,38 +1077,95 @@ const updateFamilyEditingStatus = async (req, res) => {
       });
     }
 
-    if (family.form_status === "submitted") {
-      return res.status(403).json({
-        message:
-          "لا يمكن فتح التعديل لأسرة تم تسليم نموذجها. أعد النموذج إلى draft أولًا.",
-      });
-    }
-
-    await db("families").where({ id: familyId }).update({
+    const updates = {
       editing_override,
       updated_by: req.user.id,
       updated_at: db.fn.now(),
-    });
+    };
 
-    let message;
+    let message = "";
 
+    // ==========================================
+    // 1) فتح التعديل
+    // ==========================================
     if (editing_override === true) {
-      message = "تم فتح التعديل لهذه الأسرة كاستثناء.";
-    } else if (editing_override === false) {
-      message = "تم إغلاق التعديل لهذه الأسرة كاستثناء.";
-    } else {
+      /*
+        إذا كانت الأسرة مكتملة سابقًا:
+        نرجع حالتها مؤقتًا إلى draft أثناء التعديل.
+
+        مهم جدًا:
+        لا نحذف submitted_at لأنه العلامة التي
+        تخبرنا لاحقًا أنها كانت مكتملة قبل فتحها.
+      */
+
+      if (family.form_status === "submitted") {
+        updates.form_status = "draft";
+        updates.editing_enabled = true;
+
+        message = "تم فتح التعديل وإعادة الاستمارة مؤقتًا إلى غير مكتملة.";
+      } else {
+        updates.editing_enabled = true;
+
+        message = "تم فتح التعديل لهذه الأسرة كاستثناء.";
+      }
+    }
+
+    // ==========================================
+    // 2) إغلاق التعديل
+    // ==========================================
+    else if (editing_override === false) {
+      updates.editing_enabled = false;
+
+      /*
+        إذا كانت Draft لكن يوجد submitted_at
+        فهذا يعني أنها كانت مكتملة سابقًا،
+        وتم فتحها بواسطة الأدمن للتعديل.
+
+        عند إغلاقها نعيدها مكتملة.
+      */
+
+      if (family.form_status === "draft" && family.submitted_at) {
+        updates.form_status = "submitted";
+
+        message = "تم إغلاق التعديل وإعادة الاستمارة إلى مكتملة.";
+      } else {
+        /*
+          Draft أصلية:
+          لا نحولها إلى مكتملة.
+        */
+
+        message = "تم إغلاق التعديل لهذه الأسرة كاستثناء.";
+      }
+    }
+
+    // ==========================================
+    // 3) إلغاء الاستثناء
+    // ==========================================
+    else {
       message = "تم إلغاء الاستثناء وستتبع الأسرة إعداد التعديل العام.";
     }
+
+    await db("families").where({ id: familyId }).update(updates);
+
+    const updatedFamily = await db("families")
+      .where({ id: familyId })
+      .whereNull("deleted_at")
+      .select(
+        "id",
+        "full_name",
+        "form_status",
+        "editing_override",
+        "editing_enabled",
+        "submitted_at",
+      )
+      .first();
 
     return res.status(200).json({
       message,
       data: {
         family: {
-          id: family.id,
-          full_name: family.full_name,
-          form_status: family.form_status,
-          editing_override,
-          updated_by: req.user.id,
+          ...updatedFamily,
+          editing_enabled: Boolean(updatedFamily.editing_enabled),
         },
       },
     });
@@ -1058,6 +1177,7 @@ const updateFamilyEditingStatus = async (req, res) => {
     });
   }
 };
+
 const updateFamilyFormStatus = async (req, res) => {
   try {
     const familyId = Number(req.params.familyId);
@@ -1109,6 +1229,7 @@ const updateFamilyFormStatus = async (req, res) => {
         form_status === "submitted"
           ? "تم اعتماد نموذج الأسرة بنجاح."
           : "تمت إعادة نموذج الأسرة إلى المسودة بنجاح.",
+
       data: {
         family: {
           id: family.id,
@@ -1127,7 +1248,6 @@ const updateFamilyFormStatus = async (req, res) => {
     });
   }
 };
-
 // Export
 const exportFamiliesExcel = async (req, res) => {
   try {
@@ -1135,7 +1255,13 @@ const exportFamiliesExcel = async (req, res) => {
     const editingEnabled = req.query.editing_enabled;
     const search = req.query.search?.trim() || "";
 
+    const region = req.query.region?.trim() || "";
+    const startDate = req.query.start_date?.trim() || "";
+    const endDate = req.query.end_date?.trim() || "";
+
     const allowedStatuses = ["draft", "submitted"];
+
+    const allowedRegions = ["north_gaza", "gaza", "middle_area", "south_gaza"];
 
     if (status && !allowedStatuses.includes(status)) {
       return res.status(400).json({
@@ -1149,6 +1275,32 @@ const exportFamiliesExcel = async (req, res) => {
     ) {
       return res.status(400).json({
         message: "قيمة editing_enabled يجب أن تكون true أو false.",
+      });
+    }
+
+    if (region && !allowedRegions.includes(region)) {
+      return res.status(400).json({
+        message: "المنطقة غير صحيحة.",
+      });
+    }
+
+    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+
+    if (startDate && !dateRegex.test(startDate)) {
+      return res.status(400).json({
+        message: "تاريخ البداية غير صحيح.",
+      });
+    }
+
+    if (endDate && !dateRegex.test(endDate)) {
+      return res.status(400).json({
+        message: "تاريخ النهاية غير صحيح.",
+      });
+    }
+
+    if (startDate && endDate && startDate > endDate) {
+      return res.status(400).json({
+        message: "تاريخ البداية يجب أن يكون قبل تاريخ النهاية.",
       });
     }
 
@@ -1189,6 +1341,21 @@ const exportFamiliesExcel = async (req, res) => {
           .orWhere("national_id", "like", `%${search}%`)
           .orWhere("phone", "like", `%${search}%`);
       });
+    }
+
+    if (region) {
+      familiesQuery.whereIn(
+        "id",
+        db("family_housing").select("family_id").where("previous_area", region),
+      );
+    }
+
+    if (startDate) {
+      familiesQuery.where("created_at", ">=", `${startDate} 00:00:00`);
+    }
+
+    if (endDate) {
+      familiesQuery.where("created_at", "<=", `${endDate} 23:59:59`);
     }
 
     const families = await familiesQuery.orderBy("created_at", "desc");
@@ -1316,24 +1483,121 @@ const exportFamiliesExcel = async (req, res) => {
     addWorksheet(
       "الأسر",
       [
-        { header: "رقم الأسرة", key: "id", width: 12 },
-        { header: "اسم رب الأسرة", key: "full_name", width: 28 },
-        { header: "رقم الهوية", key: "national_id", width: 16 },
-        { header: "تاريخ الميلاد", key: "date_of_birth", width: 16 },
-        { header: "رقم الهاتف", key: "phone", width: 18 },
-        { header: "فصيلة الدم", key: "blood_type", width: 14 },
-        { header: "الحالة الاجتماعية", key: "marital_status", width: 18 },
-        { header: "فئة الدخل", key: "income_category", width: 16 },
-        { header: "حالة العمل", key: "work_status", width: 16 },
-        { header: "نوع الوظيفة", key: "job_type", width: 18 },
-        { header: "وظيفة أخرى", key: "other_job_type", width: 22 },
-        { header: "حالة النموذج", key: "form_status", width: 16 },
-        { header: "التعديل مفتوح", key: "editing_enabled", width: 16 },
-        { header: "تاريخ التسليم", key: "submitted_at", width: 22 },
-        { header: "تاريخ التسجيل", key: "created_at", width: 22 },
+        {
+          header: "رقم الأسرة",
+          key: "id",
+          width: 12,
+        },
+        {
+          header: "اسم رب الأسرة",
+          key: "full_name",
+          width: 28,
+        },
+        {
+          header: "رقم الهوية",
+          key: "national_id",
+          width: 16,
+        },
+        {
+          header: "تاريخ الميلاد",
+          key: "date_of_birth",
+          width: 16,
+        },
+        {
+          header: "رقم الهاتف",
+          key: "phone",
+          width: 18,
+        },
+        {
+          header: "فصيلة الدم",
+          key: "blood_type",
+          width: 14,
+        },
+        {
+          header: "الحالة الاجتماعية",
+          key: "marital_status",
+          width: 18,
+        },
+        {
+          header: "فئة الدخل",
+          key: "income_category",
+          width: 16,
+        },
+        {
+          header: "حالة العمل",
+          key: "work_status",
+          width: 16,
+        },
+        {
+          header: "نوع الوظيفة",
+          key: "job_type",
+          width: 18,
+        },
+        {
+          header: "وظيفة أخرى",
+          key: "other_job_type",
+          width: 22,
+        },
+        {
+          header: "حالة النموذج",
+          key: "form_status",
+          width: 16,
+        },
+        {
+          header: "التعديل مفتوح",
+          key: "editing_enabled",
+          width: 16,
+        },
+        {
+          header: "تاريخ التسليم",
+          key: "submitted_at",
+          width: 22,
+        },
+        {
+          header: "تاريخ التسجيل",
+          key: "created_at",
+          width: 22,
+        },
       ],
+
       families.map((family) => ({
         ...family,
+
+        marital_status:
+          {
+            single: "أعزب",
+            married: "متزوج",
+            divorced: "مطلق",
+            widowed: "أرمل",
+          }[family.marital_status] || family.marital_status,
+
+        income_category:
+          {
+            "0-1000": "0 - 1000",
+            "1000-3000": "1000 - 3000",
+            "3000+": "أكثر من 3000",
+          }[family.income_category] || family.income_category,
+
+        work_status:
+          {
+            employee: "موظف",
+            worker: "عامل",
+            not_working: "لا يعمل",
+          }[family.work_status] || family.work_status,
+
+        job_type:
+          {
+            government: "قطاع حكومي",
+            private: "قطاع خاص",
+            other: "أخرى",
+          }[family.job_type] || family.job_type,
+
+        form_status:
+          {
+            draft: "غير مكتملة",
+            submitted: "مكتملة",
+          }[family.form_status] || family.form_status,
+
         editing_enabled: family.editing_enabled ? "نعم" : "لا",
       })),
     );
@@ -1341,16 +1605,36 @@ const exportFamiliesExcel = async (req, res) => {
     addWorksheet(
       "السكن",
       [
-        { header: "رقم السجل", key: "id", width: 12 },
-        { header: "رقم الأسرة", key: "family_id", width: 12 },
-        { header: "المنطقة السابقة", key: "previous_area", width: 20 },
+        {
+          header: "رقم السجل",
+          key: "id",
+          width: 12,
+        },
+        {
+          header: "رقم الأسرة",
+          key: "family_id",
+          width: 12,
+        },
+        {
+          header: "المنطقة السابقة",
+          key: "previous_area",
+          width: 20,
+        },
         {
           header: "نوع السكن الحالي",
           key: "current_housing_type",
           width: 20,
         },
-        { header: "نوع النزوح", key: "displacement_type", width: 20 },
-        { header: "العنوان الحالي", key: "current_address", width: 35 },
+        {
+          header: "نوع النزوح",
+          key: "displacement_type",
+          width: 20,
+        },
+        {
+          header: "العنوان الحالي",
+          key: "current_address",
+          width: 35,
+        },
       ],
       housing,
     );
@@ -1358,12 +1642,36 @@ const exportFamiliesExcel = async (req, res) => {
     addWorksheet(
       "الزوجات",
       [
-        { header: "رقم الزوجة", key: "id", width: 12 },
-        { header: "رقم الأسرة", key: "family_id", width: 12 },
-        { header: "الاسم الكامل", key: "full_name", width: 28 },
-        { header: "رقم الهوية", key: "national_id", width: 16 },
-        { header: "تاريخ الميلاد", key: "date_of_birth", width: 16 },
-        { header: "رقم الهاتف", key: "phone", width: 18 },
+        {
+          header: "رقم الزوجة",
+          key: "id",
+          width: 12,
+        },
+        {
+          header: "رقم الأسرة",
+          key: "family_id",
+          width: 12,
+        },
+        {
+          header: "الاسم الكامل",
+          key: "full_name",
+          width: 28,
+        },
+        {
+          header: "رقم الهوية",
+          key: "national_id",
+          width: 16,
+        },
+        {
+          header: "تاريخ الميلاد",
+          key: "date_of_birth",
+          width: 16,
+        },
+        {
+          header: "رقم الهاتف",
+          key: "phone",
+          width: 18,
+        },
         {
           header: "اسم العائلة السابقة",
           key: "previous_family_name",
@@ -1381,11 +1689,31 @@ const exportFamiliesExcel = async (req, res) => {
     addWorksheet(
       "الأبناء",
       [
-        { header: "رقم الابن", key: "id", width: 12 },
-        { header: "رقم الأسرة", key: "family_id", width: 12 },
-        { header: "الاسم الكامل", key: "full_name", width: 28 },
-        { header: "رقم الهوية", key: "national_id", width: 16 },
-        { header: "تاريخ الميلاد", key: "date_of_birth", width: 16 },
+        {
+          header: "رقم الابن",
+          key: "id",
+          width: 12,
+        },
+        {
+          header: "رقم الأسرة",
+          key: "family_id",
+          width: 12,
+        },
+        {
+          header: "الاسم الكامل",
+          key: "full_name",
+          width: 28,
+        },
+        {
+          header: "رقم الهوية",
+          key: "national_id",
+          width: 16,
+        },
+        {
+          header: "تاريخ الميلاد",
+          key: "date_of_birth",
+          width: 16,
+        },
         {
           header: "الحالة التعليمية",
           key: "education_status",
@@ -1403,13 +1731,41 @@ const exportFamiliesExcel = async (req, res) => {
     addWorksheet(
       "البنات المتزوجات",
       [
-        { header: "رقم السجل", key: "id", width: 12 },
-        { header: "رقم الأسرة", key: "family_id", width: 12 },
-        { header: "اسم البنت", key: "full_name", width: 28 },
-        { header: "رقم الهوية", key: "national_id", width: 16 },
-        { header: "رقم الهاتف", key: "phone", width: 18 },
-        { header: "اسم الزوج", key: "husband_full_name", width: 28 },
-        { header: "هاتف الزوج", key: "husband_phone", width: 18 },
+        {
+          header: "رقم السجل",
+          key: "id",
+          width: 12,
+        },
+        {
+          header: "رقم الأسرة",
+          key: "family_id",
+          width: 12,
+        },
+        {
+          header: "اسم البنت",
+          key: "full_name",
+          width: 28,
+        },
+        {
+          header: "رقم الهوية",
+          key: "national_id",
+          width: 16,
+        },
+        {
+          header: "رقم الهاتف",
+          key: "phone",
+          width: 18,
+        },
+        {
+          header: "اسم الزوج",
+          key: "husband_full_name",
+          width: 28,
+        },
+        {
+          header: "هاتف الزوج",
+          key: "husband_phone",
+          width: 18,
+        },
       ],
       marriedDaughters,
     );
@@ -1417,14 +1773,46 @@ const exportFamiliesExcel = async (req, res) => {
     addWorksheet(
       "الحالات الخاصة",
       [
-        { header: "رقم الحالة", key: "id", width: 12 },
-        { header: "رقم الأسرة", key: "family_id", width: 12 },
-        { header: "الاسم الكامل", key: "full_name", width: 28 },
-        { header: "رقم الهوية", key: "national_id", width: 16 },
-        { header: "تاريخ الميلاد", key: "date_of_birth", width: 16 },
-        { header: "صلة القرابة", key: "relationship", width: 18 },
-        { header: "نوع الحالة", key: "case_type", width: 18 },
-        { header: "تفاصيل الحالة", key: "case_details", width: 45 },
+        {
+          header: "رقم الحالة",
+          key: "id",
+          width: 12,
+        },
+        {
+          header: "رقم الأسرة",
+          key: "family_id",
+          width: 12,
+        },
+        {
+          header: "الاسم الكامل",
+          key: "full_name",
+          width: 28,
+        },
+        {
+          header: "رقم الهوية",
+          key: "national_id",
+          width: 16,
+        },
+        {
+          header: "تاريخ الميلاد",
+          key: "date_of_birth",
+          width: 16,
+        },
+        {
+          header: "صلة القرابة",
+          key: "relationship",
+          width: 18,
+        },
+        {
+          header: "نوع الحالة",
+          key: "case_type",
+          width: 18,
+        },
+        {
+          header: "تفاصيل الحالة",
+          key: "case_details",
+          width: 45,
+        },
       ],
       specialCases,
     );
@@ -1451,7 +1839,6 @@ const exportFamiliesExcel = async (req, res) => {
     });
   }
 };
-
 // system_settings
 const getSystemSettings = async (req, res) => {
   try {
@@ -1461,6 +1848,7 @@ const getSystemSettings = async (req, res) => {
         "registration_enabled",
         "global_editing_enabled",
         "system_name",
+        "registration_opens_at",
         "registration_closes_at",
         "updated_by",
         "created_at",
@@ -1492,12 +1880,14 @@ const getSystemSettings = async (req, res) => {
     });
   }
 };
+
 const updateSystemSettings = async (req, res) => {
   try {
     const {
       registration_enabled,
       global_editing_enabled,
       system_name,
+      registration_opens_at,
       registration_closes_at,
     } = req.body;
 
@@ -1533,6 +1923,44 @@ const updateSystemSettings = async (req, res) => {
       });
     }
 
+    const finalRegistrationOpensAt =
+      registration_opens_at !== undefined
+        ? registration_opens_at || null
+        : settings.registration_opens_at;
+
+    const finalRegistrationClosesAt =
+      registration_closes_at !== undefined
+        ? registration_closes_at || null
+        : settings.registration_closes_at;
+
+    if (
+      finalRegistrationOpensAt &&
+      Number.isNaN(new Date(finalRegistrationOpensAt).getTime())
+    ) {
+      return res.status(400).json({
+        message: "تاريخ بداية التسجيل غير صحيح.",
+      });
+    }
+
+    if (
+      finalRegistrationClosesAt &&
+      Number.isNaN(new Date(finalRegistrationClosesAt).getTime())
+    ) {
+      return res.status(400).json({
+        message: "تاريخ نهاية التسجيل غير صحيح.",
+      });
+    }
+
+    if (
+      finalRegistrationOpensAt &&
+      finalRegistrationClosesAt &&
+      new Date(finalRegistrationOpensAt) > new Date(finalRegistrationClosesAt)
+    ) {
+      return res.status(400).json({
+        message: "تاريخ بداية التسجيل يجب أن يكون قبل تاريخ نهاية التسجيل.",
+      });
+    }
+
     const updates = {
       updated_by: req.user.id,
       updated_at: db.fn.now(),
@@ -1548,6 +1976,10 @@ const updateSystemSettings = async (req, res) => {
 
     if (system_name !== undefined) {
       updates.system_name = String(system_name).trim();
+    }
+
+    if (registration_opens_at !== undefined) {
+      updates.registration_opens_at = registration_opens_at || null;
     }
 
     if (registration_closes_at !== undefined) {
@@ -1569,6 +2001,7 @@ const updateSystemSettings = async (req, res) => {
         "registration_enabled",
         "global_editing_enabled",
         "system_name",
+        "registration_opens_at",
         "registration_closes_at",
         "updated_by",
         "created_at",
@@ -1596,6 +2029,7 @@ const updateSystemSettings = async (req, res) => {
     });
   }
 };
+
 const openRegistration = async (req, res) => {
   try {
     const settings = await db("system_settings").first();
@@ -1626,6 +2060,7 @@ const openRegistration = async (req, res) => {
     });
   }
 };
+
 const closeRegistration = async (req, res) => {
   try {
     const settings = await db("system_settings").first();
@@ -1656,6 +2091,7 @@ const closeRegistration = async (req, res) => {
     });
   }
 };
+
 const openGlobalEditing = async (req, res) => {
   try {
     const settings = await db("system_settings").first();
@@ -1686,6 +2122,7 @@ const openGlobalEditing = async (req, res) => {
     });
   }
 };
+
 const closeGlobalEditing = async (req, res) => {
   try {
     const settings = await db("system_settings").first();
@@ -1716,7 +2153,6 @@ const closeGlobalEditing = async (req, res) => {
     });
   }
 };
-
 // Supervisors
 const assignSupervisor = async (req, res) => {
   try {
@@ -1824,6 +2260,7 @@ const assignSupervisor = async (req, res) => {
     });
   }
 };
+
 const getSupervisors = async (req, res) => {
   try {
     const supervisors = await db("users")
@@ -1868,6 +2305,7 @@ const getSupervisors = async (req, res) => {
     });
   }
 };
+
 const getSupervisor = async (req, res) => {
   try {
     const supervisorId = Number(req.params.supervisorId);
@@ -1939,12 +2377,14 @@ const getSupervisor = async (req, res) => {
           assigned_at: supervisor.assigned_at,
           role_updated_at: supervisor.role_updated_at,
           last_login_at: supervisor.last_login_at,
+
           family: family
             ? {
                 id: family.id,
                 full_name: family.full_name,
                 national_id: family.national_id,
                 form_status: family.form_status,
+
                 editing_override:
                   family.editing_override === null
                     ? null
@@ -1962,6 +2402,7 @@ const getSupervisor = async (req, res) => {
     });
   }
 };
+
 const updateSupervisor = async (req, res) => {
   try {
     const supervisorId = Number(req.params.supervisorId);
@@ -2006,8 +2447,12 @@ const updateSupervisor = async (req, res) => {
 
     if (national_id !== undefined) {
       const duplicateUser = await db("users")
-        .where({ national_id: String(national_id) })
-        .whereNot({ id: supervisorId })
+        .where({
+          national_id: String(national_id),
+        })
+        .whereNot({
+          id: supervisorId,
+        })
         .first();
 
       if (duplicateUser) {
@@ -2063,9 +2508,11 @@ const updateSupervisor = async (req, res) => {
     });
   }
 };
+
 const toggleSupervisorStatus = async (req, res) => {
   try {
     const supervisorId = Number(req.params.supervisorId);
+
     const { is_active } = req.body;
 
     if (!Number.isInteger(supervisorId) || supervisorId <= 0) {
@@ -2116,6 +2563,7 @@ const toggleSupervisorStatus = async (req, res) => {
 
     return res.status(200).json({
       message: is_active ? "تم تفعيل المشرف بنجاح." : "تم تعطيل المشرف بنجاح.",
+
       data: {
         supervisor: {
           id: supervisorId,
@@ -2131,6 +2579,7 @@ const toggleSupervisorStatus = async (req, res) => {
     });
   }
 };
+
 const deleteSupervisor = async (req, res) => {
   try {
     const supervisorId = Number(req.params.supervisorId);
@@ -2174,6 +2623,7 @@ const deleteSupervisor = async (req, res) => {
 
     return res.status(200).json({
       message: "تم إزالة صلاحية المشرف بنجاح.",
+
       data: {
         user_id: supervisorId,
         remaining_role: "family_head",
@@ -2187,11 +2637,13 @@ const deleteSupervisor = async (req, res) => {
     });
   }
 };
+
 const updateSupervisorPermissions = async (req, res) => {
   const trx = await db.transaction();
 
   try {
     const supervisorId = Number(req.params.supervisorId);
+
     const { permissions } = req.body || {};
 
     if (!Number.isInteger(supervisorId) || supervisorId <= 0) {
@@ -2264,7 +2716,11 @@ const updateSupervisorPermissions = async (req, res) => {
       }
     }
 
-    await trx("user_permissions").where({ user_id: supervisorId }).delete();
+    await trx("user_permissions")
+      .where({
+        user_id: supervisorId,
+      })
+      .delete();
 
     if (permissionIds.length > 0) {
       await trx("user_permissions").insert(
@@ -2285,6 +2741,7 @@ const updateSupervisorPermissions = async (req, res) => {
 
     return res.status(200).json({
       message: "تم تحديث صلاحيات المشرف بنجاح.",
+
       data: {
         supervisor_id: supervisorId,
         permissions: updatedPermissions,
@@ -2300,6 +2757,136 @@ const updateSupervisorPermissions = async (req, res) => {
     });
   }
 };
+const getExportStats = async (req, res) => {
+  try {
+    const status = req.query.status?.trim() || "";
+    const region = req.query.region?.trim() || "";
+    const startDate = req.query.start_date?.trim() || "";
+    const endDate = req.query.end_date?.trim() || "";
+
+    const allowedStatuses = ["draft", "submitted"];
+
+    const allowedRegions = ["north_gaza", "gaza", "middle_area", "south_gaza"];
+
+    if (status && !allowedStatuses.includes(status)) {
+      return res.status(400).json({
+        message: "حالة النموذج غير صحيحة.",
+      });
+    }
+
+    if (region && !allowedRegions.includes(region)) {
+      return res.status(400).json({
+        message: "المنطقة غير صحيحة.",
+      });
+    }
+
+    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+
+    if (startDate && !dateRegex.test(startDate)) {
+      return res.status(400).json({
+        message: "تاريخ البداية غير صحيح.",
+      });
+    }
+
+    if (endDate && !dateRegex.test(endDate)) {
+      return res.status(400).json({
+        message: "تاريخ النهاية غير صحيح.",
+      });
+    }
+
+    if (startDate && endDate && startDate > endDate) {
+      return res.status(400).json({
+        message: "تاريخ البداية يجب أن يكون قبل تاريخ النهاية.",
+      });
+    }
+
+    const familiesQuery = db("families").whereNull("families.deleted_at");
+
+    if (status) {
+      familiesQuery.where("families.form_status", status);
+    }
+
+    if (region) {
+      familiesQuery.whereIn(
+        "families.id",
+        db("family_housing").select("family_id").where("previous_area", region),
+      );
+    }
+
+    if (startDate) {
+      familiesQuery.where("families.created_at", ">=", `${startDate} 00:00:00`);
+    }
+
+    if (endDate) {
+      familiesQuery.where("families.created_at", "<=", `${endDate} 23:59:59`);
+    }
+
+    const familyIdsRows = await familiesQuery.clone().select("families.id");
+
+    const familyIds = familyIdsRows.map((family) => family.id);
+
+    const familiesCount = familyIds.length;
+
+    if (familiesCount === 0) {
+      return res.status(200).json({
+        message: "تم جلب إحصائيات التصدير بنجاح.",
+        data: {
+          families_count: 0,
+          members_count: 0,
+        },
+      });
+    }
+
+    const [wivesResult, childrenResult, marriedDaughtersResult] =
+      await Promise.all([
+        db("wives")
+          .whereIn("family_id", familyIds)
+          .count({
+            count: "id",
+          })
+          .first(),
+
+        db("children")
+          .whereIn("family_id", familyIds)
+          .count({
+            count: "id",
+          })
+          .first(),
+
+        db("married_daughters")
+          .whereIn("family_id", familyIds)
+          .count({
+            count: "id",
+          })
+          .first(),
+      ]);
+
+    const wivesCount = Number(wivesResult.count);
+
+    const childrenCount = Number(childrenResult.count);
+
+    const marriedDaughtersCount = Number(marriedDaughtersResult.count);
+
+    const membersCount =
+      familiesCount + wivesCount + childrenCount + marriedDaughtersCount;
+
+    return res.status(200).json({
+      message: "تم جلب إحصائيات التصدير بنجاح.",
+      data: {
+        families_count: familiesCount,
+
+        members_count: membersCount,
+      },
+    });
+  } catch (error) {
+    console.error("Get export stats error:", error);
+
+    return res.status(500).json({
+      message: "حدث خطأ أثناء جلب إحصائيات التصدير.",
+    });
+  }
+};
+
 module.exports = {
   // Admin Dashboard
   getDashboardStats,
@@ -2317,7 +2904,7 @@ module.exports = {
   // Export
   exportFamiliesExcel,
 
-  //Settings
+  // Settings
   getSystemSettings,
   updateSystemSettings,
   openRegistration,
@@ -2333,4 +2920,7 @@ module.exports = {
   toggleSupervisorStatus,
   deleteSupervisor,
   updateSupervisorPermissions,
+
+  // Export Stats
+  getExportStats,
 };

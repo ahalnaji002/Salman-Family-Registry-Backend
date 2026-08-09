@@ -31,14 +31,10 @@ const getFamilyEditingPermission = async (family) => {
     };
   }
 
-  const globalEditingEnabled = Boolean(
-    settings.global_editing_enabled,
-  );
+  const globalEditingEnabled = Boolean(settings.global_editing_enabled);
 
   const editingOverride =
-    family.editing_override === null
-      ? null
-      : Boolean(family.editing_override);
+    family.editing_override === null ? null : Boolean(family.editing_override);
 
   let canEdit = false;
   let reason = null;
@@ -46,8 +42,7 @@ const getFamilyEditingPermission = async (family) => {
   // الإغلاق العام يمنع الجميع
   if (!globalEditingEnabled) {
     canEdit = false;
-    reason =
-      "التعديل مغلق حاليًا على مستوى النظام.";
+    reason = "التعديل مغلق حاليًا على مستوى النظام.";
   }
 
   // إذا التعديل العام مفتوح، نفحص استثناء الأسرة
@@ -55,8 +50,7 @@ const getFamilyEditingPermission = async (family) => {
     canEdit = editingOverride;
 
     if (!canEdit) {
-      reason =
-        "تم إغلاق التعديل لهذه الأسرة من قبل الإدارة.";
+      reason = "تم إغلاق التعديل لهذه الأسرة من قبل الإدارة.";
     }
   }
 
@@ -699,12 +693,7 @@ const getMyEditingStatus = async (req, res) => {
     const family = await db("families")
       .where({ user_id: req.user.id })
       .whereNull("deleted_at")
-      .select(
-        "id",
-        "form_status",
-        "editing_override",
-        "submitted_at",
-      )
+      .select("id", "form_status", "editing_override", "submitted_at")
       .first();
 
     if (!family) {
@@ -714,10 +703,7 @@ const getMyEditingStatus = async (req, res) => {
     }
 
     const settings = await db("system_settings")
-      .select(
-        "global_editing_enabled",
-        "registration_closes_at",
-      )
+      .select("global_editing_enabled", "registration_closes_at")
       .first();
 
     if (!settings) {
@@ -726,9 +712,7 @@ const getMyEditingStatus = async (req, res) => {
       });
     }
 
-    const globalEditingEnabled = Boolean(
-      settings.global_editing_enabled,
-    );
+    const globalEditingEnabled = Boolean(settings.global_editing_enabled);
 
     let canEdit = false;
     let reason = null;
@@ -745,19 +729,15 @@ const getMyEditingStatus = async (req, res) => {
     else if (!globalEditingEnabled) {
       canEdit = false;
 
-      reason =
-        "التعديل مغلق حاليًا على مستوى النظام.";
+      reason = "التعديل مغلق حاليًا على مستوى النظام.";
     }
 
     // إذا التعديل العام مفتوح نفحص استثناء الأسرة
     else if (family.editing_override !== null) {
-      canEdit = Boolean(
-        family.editing_override,
-      );
+      canEdit = Boolean(family.editing_override);
 
       if (!canEdit) {
-        reason =
-          "تم إغلاق التعديل لهذه الأسرة من قبل الإدارة.";
+        reason = "تم إغلاق التعديل لهذه الأسرة من قبل الإدارة.";
       }
     }
 
@@ -772,36 +752,27 @@ const getMyEditingStatus = async (req, res) => {
         family_id: family.id,
         form_status: family.form_status,
 
-        global_editing_enabled:
-          globalEditingEnabled,
+        global_editing_enabled: globalEditingEnabled,
 
-        registration_closes_at:
-          settings.registration_closes_at,
+        registration_closes_at: settings.registration_closes_at,
 
         editing_override:
           family.editing_override === null
             ? null
-            : Boolean(
-                family.editing_override,
-              ),
+            : Boolean(family.editing_override),
 
         can_edit: canEdit,
 
-        submitted_at:
-          family.submitted_at,
+        submitted_at: family.submitted_at,
 
         reason,
       },
     });
   } catch (error) {
-    console.error(
-      "Get editing status error:",
-      error,
-    );
+    console.error("Get editing status error:", error);
 
     return res.status(500).json({
-      message:
-        "حدث خطأ أثناء جلب حالة التعديل.",
+      message: "حدث خطأ أثناء جلب حالة التعديل.",
     });
   }
 };
@@ -1767,7 +1738,7 @@ const deleteMyWife = async (req, res) => {
         id: wifeId,
         family_id: family.id,
       })
-      .select("id", "full_name")
+      .select("id", "full_name", "national_id")
       .first();
 
     if (!wife) {
@@ -1776,12 +1747,22 @@ const deleteMyWife = async (req, res) => {
       });
     }
 
-    await db("wives")
-      .where({
-        id: wifeId,
-        family_id: family.id,
-      })
-      .delete();
+    await db.transaction(async (trx) => {
+      await trx("special_cases")
+        .where({
+          family_id: family.id,
+          national_id: wife.national_id,
+        })
+        .whereNot("case_type", "martyr")
+        .delete();
+
+      await trx("wives")
+        .where({
+          id: wifeId,
+          family_id: family.id,
+        })
+        .delete();
+    });
 
     return res.status(200).json({
       message: "تم حذف بيانات الزوجة بنجاح.",
@@ -2275,7 +2256,7 @@ const deleteMyChild = async (req, res) => {
         id: childId,
         family_id: family.id,
       })
-      .select("id", "full_name")
+      .select("id", "full_name", "national_id")
       .first();
 
     if (!child) {
@@ -2284,12 +2265,22 @@ const deleteMyChild = async (req, res) => {
       });
     }
 
-    await db("children")
-      .where({
-        id: childId,
-        family_id: family.id,
-      })
-      .delete();
+    await db.transaction(async (trx) => {
+      await trx("special_cases")
+        .where({
+          family_id: family.id,
+          national_id: child.national_id,
+        })
+        .whereNot("case_type", "martyr")
+        .delete();
+
+      await trx("children")
+        .where({
+          id: childId,
+          family_id: family.id,
+        })
+        .delete();
+    });
 
     return res.status(200).json({
       message: "تم حذف بيانات الابن بنجاح.",

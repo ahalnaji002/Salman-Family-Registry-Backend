@@ -229,6 +229,7 @@ const getFamilies = async (req, res) => {
 
     const familiesQuery = baseQuery
       .clone()
+      .leftJoin("family_housing", "families.id", "family_housing.family_id")
       .select(
         "families.id",
         "families.full_name",
@@ -246,6 +247,18 @@ const getFamilies = async (req, res) => {
         "families.editing_enabled",
         "families.submitted_at",
         "families.created_at",
+
+        "family_housing.previous_area",
+
+        db.raw(`
+      (
+        1
+        + (SELECT COUNT(*) FROM wives WHERE wives.family_id = families.id)
+        + (SELECT COUNT(*) FROM children WHERE children.family_id = families.id)
+        + (SELECT COUNT(*) FROM married_daughters WHERE married_daughters.family_id = families.id)
+      ) AS members_count
+    `),
+
         "users.is_active as user_is_active",
       )
       .orderBy("families.created_at", "desc")
@@ -638,7 +651,6 @@ const createFamily = async (req, res) => {
     });
   }
 };
-
 const updateFamily = async (req, res) => {
   try {
     const familyId = Number(req.params.familyId);
@@ -1001,7 +1013,6 @@ const deleteFamily = async (req, res) => {
     });
   }
 };
-
 const restoreFamily = async (req, res) => {
   try {
     const familyId = Number(req.params.familyId);
@@ -1060,7 +1071,6 @@ const restoreFamily = async (req, res) => {
     });
   }
 };
-
 const updateFamilyEditingStatus = async (req, res) => {
   try {
     const familyId = Number(req.params.familyId);
@@ -1197,7 +1207,6 @@ const updateFamilyEditingStatus = async (req, res) => {
     });
   }
 };
-
 const updateFamilyFormStatus = async (req, res) => {
   try {
     const familyId = Number(req.params.familyId);
@@ -1900,7 +1909,6 @@ const getSystemSettings = async (req, res) => {
     });
   }
 };
-
 const updateSystemSettings = async (req, res) => {
   try {
     const {
@@ -2049,7 +2057,6 @@ const updateSystemSettings = async (req, res) => {
     });
   }
 };
-
 const openRegistration = async (req, res) => {
   try {
     const settings = await db("system_settings").first();
@@ -2080,7 +2087,6 @@ const openRegistration = async (req, res) => {
     });
   }
 };
-
 const closeRegistration = async (req, res) => {
   try {
     const settings = await db("system_settings").first();
@@ -2111,7 +2117,6 @@ const closeRegistration = async (req, res) => {
     });
   }
 };
-
 const openGlobalEditing = async (req, res) => {
   try {
     const settings = await db("system_settings").first();
@@ -2142,7 +2147,6 @@ const openGlobalEditing = async (req, res) => {
     });
   }
 };
-
 const closeGlobalEditing = async (req, res) => {
   try {
     const settings = await db("system_settings").first();
@@ -2173,9 +2177,6 @@ const closeGlobalEditing = async (req, res) => {
     });
   }
 };
-
-// Backups
-
 // =========================
 // Admin Backups
 // =========================

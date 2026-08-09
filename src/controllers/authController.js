@@ -363,7 +363,11 @@ const me = async (req, res) => {
           full_name: req.user.full_name,
           national_id: req.user.national_id,
           phone: req.user.phone,
-          role: req.user.role,
+          roles: Array.isArray(req.user.roles)
+            ? req.user.roles
+            : req.user.role
+              ? [req.user.role]
+              : [],
         },
         family: family
           ? {

@@ -836,8 +836,7 @@ const getMyFormCompletion = async (req, res) => {
         key: "wives",
         name: "بيانات الزوجة",
         required: family.marital_status === "married",
-        completed:
-          family.marital_status !== "married" || Number(wivesCount.count) > 0,
+        completed: Number(wivesCount.count) > 0,
       },
       {
         key: "children",

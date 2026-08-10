@@ -136,6 +136,9 @@ const getMyFamily = async (req, res) => {
         "phone",
         "blood_type",
         "marital_status",
+        "has_children",
+        "has_special_cases",
+        "has_married_daughters",
         "income_category",
         "work_status",
         "job_type",
@@ -214,6 +217,20 @@ const getMyFamily = async (req, res) => {
       data: {
         family: {
           ...family,
+
+          has_children:
+            family.has_children === null ? null : Boolean(family.has_children),
+
+          has_special_cases:
+            family.has_special_cases === null
+              ? null
+              : Boolean(family.has_special_cases),
+
+          has_married_daughters:
+            family.has_married_daughters === null
+              ? null
+              : Boolean(family.has_married_daughters),
+
           editing_enabled: Boolean(family.editing_enabled),
         },
         housing: housing || null,
@@ -264,10 +281,16 @@ const updateMyFamily = async (req, res) => {
       work_status,
       job_type,
       other_job_type,
+      has_children,
+      has_special_cases,
+      has_married_daughters,
     } = req.body;
 
     const normalizedNationalId =
       national_id !== undefined ? String(national_id).trim() : undefined;
+
+    const normalizedPhone =
+      phone !== undefined ? String(phone).trim() : undefined;
 
     if (
       normalizedNationalId !== undefined &&
@@ -276,6 +299,26 @@ const updateMyFamily = async (req, res) => {
       return res.status(400).json({
         message: "رقم الهوية يجب أن يتكون من 9 أرقام.",
       });
+    }
+
+    if (
+      normalizedPhone !== undefined &&
+      !/^05[69]\d{7}$/.test(normalizedPhone)
+    ) {
+      return res.status(400).json({
+        message: "رقم الجوال يجب أن يبدأ بـ 059 أو 056 ويتكون من 10 أرقام.",
+      });
+    }
+
+    if (date_of_birth !== undefined) {
+      const birthDate = new Date(`${date_of_birth}T00:00:00`);
+      const today = new Date();
+
+      if (Number.isNaN(birthDate.getTime()) || birthDate > today) {
+        return res.status(400).json({
+          message: "تاريخ الميلاد غير صحيح ولا يمكن أن يكون في المستقبل.",
+        });
+      }
     }
 
     const allowedMaritalStatuses = ["single", "married", "divorced", "widowed"];
@@ -293,6 +336,36 @@ const updateMyFamily = async (req, res) => {
       return res.status(400).json({
         message: "الحالة الاجتماعية غير صحيحة.",
       });
+    }
+
+    const dynamicSectionAnswers = [
+      {
+        key: "has_children",
+        value: has_children,
+        label: "وجود أبناء",
+      },
+      {
+        key: "has_special_cases",
+        value: has_special_cases,
+        label: "وجود حالات خاصة",
+      },
+      {
+        key: "has_married_daughters",
+        value: has_married_daughters,
+        label: "وجود بنات متزوجات",
+      },
+    ];
+
+    for (const answer of dynamicSectionAnswers) {
+      if (
+        answer.value !== undefined &&
+        answer.value !== null &&
+        typeof answer.value !== "boolean"
+      ) {
+        return res.status(400).json({
+          message: `قيمة ${answer.label} يجب أن تكون نعم أو لا.`,
+        });
+      }
     }
 
     if (
@@ -406,10 +479,9 @@ const updateMyFamily = async (req, res) => {
       familyUpdates.national_id = normalizedNationalId;
     }
 
-    if (phone !== undefined) {
-      familyUpdates.phone = String(phone).trim();
+    if (normalizedPhone !== undefined) {
+      familyUpdates.phone = normalizedPhone;
     }
-
     if (date_of_birth !== undefined) {
       familyUpdates.date_of_birth = date_of_birth;
     }
@@ -420,6 +492,18 @@ const updateMyFamily = async (req, res) => {
 
     if (marital_status !== undefined) {
       familyUpdates.marital_status = marital_status;
+    }
+
+    if (has_children !== undefined) {
+      familyUpdates.has_children = has_children;
+    }
+
+    if (has_special_cases !== undefined) {
+      familyUpdates.has_special_cases = has_special_cases;
+    }
+
+    if (has_married_daughters !== undefined) {
+      familyUpdates.has_married_daughters = has_married_daughters;
     }
 
     if (income_category !== undefined) {
@@ -458,6 +542,9 @@ const updateMyFamily = async (req, res) => {
       work_status,
       job_type,
       other_job_type,
+      has_children,
+      has_special_cases,
+      has_married_daughters,
     ].some((value) => value !== undefined);
 
     if (!hasRequestedUpdate) {
@@ -479,8 +566,8 @@ const updateMyFamily = async (req, res) => {
         userUpdates.national_id = normalizedNationalId;
       }
 
-      if (phone !== undefined) {
-        userUpdates.phone = String(phone).trim();
+      if (normalizedPhone !== undefined) {
+        userUpdates.phone = normalizedPhone;
       }
 
       if (Object.keys(userUpdates).length > 0) {
@@ -501,6 +588,9 @@ const updateMyFamily = async (req, res) => {
         "phone",
         "blood_type",
         "marital_status",
+        "has_children",
+        "has_special_cases",
+        "has_married_daughters",
         "income_category",
         "work_status",
         "job_type",
@@ -518,6 +608,21 @@ const updateMyFamily = async (req, res) => {
       data: {
         family: {
           ...updatedFamily,
+
+          has_children:
+            updatedFamily.has_children === null
+              ? null
+              : Boolean(updatedFamily.has_children),
+
+          has_special_cases:
+            updatedFamily.has_special_cases === null
+              ? null
+              : Boolean(updatedFamily.has_special_cases),
+
+          has_married_daughters:
+            updatedFamily.has_married_daughters === null
+              ? null
+              : Boolean(updatedFamily.has_married_daughters),
 
           editing_enabled: Boolean(updatedFamily.editing_enabled),
 
@@ -791,7 +896,13 @@ const getMyFormCompletion = async (req, res) => {
 
     const editingPermission = await getFamilyEditingPermission(family);
 
-    const [housing, wivesCount, childrenCount] = await Promise.all([
+    const [
+      housing,
+      wivesCount,
+      childrenCount,
+      specialCasesCount,
+      marriedDaughtersCount,
+    ] = await Promise.all([
       db("family_housing").where({ family_id: family.id }).first(),
 
       db("wives")
@@ -800,6 +911,16 @@ const getMyFormCompletion = async (req, res) => {
         .first(),
 
       db("children")
+        .where({ family_id: family.id })
+        .count({ count: "id" })
+        .first(),
+
+      db("special_cases")
+        .where({ family_id: family.id })
+        .count({ count: "id" })
+        .first(),
+
+      db("married_daughters")
         .where({ family_id: family.id })
         .count({ count: "id" })
         .first(),
@@ -823,7 +944,7 @@ const getMyFormCompletion = async (req, res) => {
       {
         key: "personal_photo",
         name: "الصورة الشخصية",
-        required: true,
+        required: false,
         completed: Boolean(family.personal_photo_path),
       },
       {
@@ -836,13 +957,62 @@ const getMyFormCompletion = async (req, res) => {
         key: "wives",
         name: "بيانات الزوجة",
         required: family.marital_status === "married",
-        completed: Number(wivesCount.count) > 0,
+        applicable: family.marital_status === "married",
+        completed:
+          family.marital_status === "married"
+            ? Number(wivesCount.count) > 0
+            : true,
+      },
+      {
+        key: "children_question",
+        name: "سؤال وجود الأبناء",
+        required: true,
+        applicable: true,
+        completed: family.has_children !== null,
       },
       {
         key: "children",
         name: "بيانات الأبناء",
-        required: false,
-        completed: Number(childrenCount.count) > 0,
+        required: family.has_children === true,
+        applicable: family.has_children === true,
+        completed:
+          family.has_children === true
+            ? Number(childrenCount.count) > 0
+            : family.has_children === false,
+      },
+      {
+        key: "special_cases_question",
+        name: "سؤال وجود حالات خاصة",
+        required: true,
+        applicable: true,
+        completed: family.has_special_cases !== null,
+      },
+      {
+        key: "special_cases",
+        name: "الحالات الخاصة",
+        required: family.has_special_cases === true,
+        applicable: family.has_special_cases === true,
+        completed:
+          family.has_special_cases === true
+            ? Number(specialCasesCount.count) > 0
+            : family.has_special_cases === false,
+      },
+      {
+        key: "married_daughters_question",
+        name: "سؤال وجود بنات متزوجات",
+        required: true,
+        applicable: true,
+        completed: family.has_married_daughters !== null,
+      },
+      {
+        key: "married_daughters",
+        name: "البنات المتزوجات",
+        required: family.has_married_daughters === true,
+        applicable: family.has_married_daughters === true,
+        completed:
+          family.has_married_daughters === true
+            ? Number(marriedDaughtersCount.count) > 0
+            : family.has_married_daughters === false,
       },
     ];
 
@@ -980,16 +1150,39 @@ const submitMyFamilyForm = async (req, res) => {
       missingFields.push("توضيح نوع الوظيفة الأخرى");
     }
 
-    if (!family.personal_photo_path) {
-      missingFields.push("الصورة الشخصية");
-    }
-
     if (!housing) {
       missingFields.push("بيانات السكن");
     }
 
     if (family.marital_status === "married" && Number(wivesCount.count) === 0) {
       missingFields.push("بيانات الزوجة");
+    }
+
+    if (family.has_children === null) {
+      missingFields.push("الإجابة عن سؤال وجود الأبناء");
+    } else if (
+      family.has_children === true &&
+      Number(childrenCount.count) === 0
+    ) {
+      missingFields.push("بيانات الأبناء");
+    }
+
+    if (family.has_special_cases === null) {
+      missingFields.push("الإجابة عن سؤال وجود حالات خاصة");
+    } else if (
+      family.has_special_cases === true &&
+      Number(specialCasesCount.count) === 0
+    ) {
+      missingFields.push("بيانات الحالات الخاصة");
+    }
+
+    if (family.has_married_daughters === null) {
+      missingFields.push("الإجابة عن سؤال وجود بنات متزوجات");
+    } else if (
+      family.has_married_daughters === true &&
+      Number(marriedDaughtersCount.count) === 0
+    ) {
+      missingFields.push("بيانات البنات المتزوجات");
     }
 
     if (missingFields.length > 0) {
@@ -1375,6 +1568,17 @@ const createMyWife = async (req, res) => {
       });
     }
 
+    const wivesCount = await db("wives")
+      .where({ family_id: family.id })
+      .count({ count: "id" })
+      .first();
+
+    if (Number(wivesCount.count) >= 4) {
+      return res.status(400).json({
+        message: "لا يمكن إضافة أكثر من 4 زوجات.",
+      });
+    }
+
     const {
       full_name,
       national_id,
@@ -1383,6 +1587,24 @@ const createMyWife = async (req, res) => {
       previous_family_name,
       employment_status,
     } = req.body;
+
+    const normalizedPhone = String(phone || "").trim();
+
+    if (!/^05[69]\d{7}$/.test(normalizedPhone)) {
+      return res.status(400).json({
+        message:
+          "رقم جوال الزوجة يجب أن يبدأ بـ 059 أو 056 ويتكون من 10 أرقام.",
+      });
+    }
+
+    const birthDate = new Date(`${date_of_birth}T00:00:00`);
+    const today = new Date();
+
+    if (Number.isNaN(birthDate.getTime()) || birthDate > today) {
+      return res.status(400).json({
+        message: "تاريخ ميلاد الزوجة غير صحيح ولا يمكن أن يكون في المستقبل.",
+      });
+    }
 
     if (
       !full_name ||
@@ -1418,7 +1640,7 @@ const createMyWife = async (req, res) => {
       full_name: full_name.trim(),
       national_id: String(national_id),
       date_of_birth,
-      phone: phone.trim(),
+      phone: normalizedPhone,
       previous_family_name: previous_family_name.trim(),
       employment_status: employment_status.trim(),
     });
@@ -1616,6 +1838,30 @@ const updateMyWife = async (req, res) => {
       employment_status,
     } = req.body;
 
+    const normalizedPhone =
+      phone !== undefined ? String(phone).trim() : undefined;
+
+    if (
+      normalizedPhone !== undefined &&
+      !/^05[69]\d{7}$/.test(normalizedPhone)
+    ) {
+      return res.status(400).json({
+        message:
+          "رقم جوال الزوجة يجب أن يبدأ بـ 059 أو 056 ويتكون من 10 أرقام.",
+      });
+    }
+
+    if (date_of_birth !== undefined) {
+      const birthDate = new Date(`${date_of_birth}T00:00:00`);
+      const today = new Date();
+
+      if (Number.isNaN(birthDate.getTime()) || birthDate > today) {
+        return res.status(400).json({
+          message: "تاريخ ميلاد الزوجة غير صحيح ولا يمكن أن يكون في المستقبل.",
+        });
+      }
+    }
+
     if (national_id !== undefined && !/^\d{9}$/.test(String(national_id))) {
       return res.status(400).json({
         message: "رقم هوية الزوجة يجب أن يتكون من 9 أرقام.",
@@ -1647,7 +1893,7 @@ const updateMyWife = async (req, res) => {
       full_name,
       national_id,
       date_of_birth,
-      phone,
+      phone: normalizedPhone,
       previous_family_name,
       employment_status,
     };
@@ -1827,6 +2073,15 @@ const createMyChild = async (req, res) => {
     if (!/^\d{9}$/.test(String(national_id))) {
       return res.status(400).json({
         message: "رقم هوية الابن يجب أن يتكون من 9 أرقام.",
+      });
+    }
+
+    const birthDate = new Date(`${date_of_birth}T00:00:00`);
+    const today = new Date();
+
+    if (Number.isNaN(birthDate.getTime()) || birthDate > today) {
+      return res.status(400).json({
+        message: "تاريخ ميلاد الابن غير صحيح ولا يمكن أن يكون في المستقبل.",
       });
     }
 
@@ -2078,6 +2333,17 @@ const updateMyChild = async (req, res) => {
       return res.status(400).json({
         message: "رقم هوية الابن يجب أن يتكون من 9 أرقام.",
       });
+    }
+
+    if (date_of_birth !== undefined) {
+      const birthDate = new Date(`${date_of_birth}T00:00:00`);
+      const today = new Date();
+
+      if (Number.isNaN(birthDate.getTime()) || birthDate > today) {
+        return res.status(400).json({
+          message: "تاريخ ميلاد الابن غير صحيح ولا يمكن أن يكون في المستقبل.",
+        });
+      }
     }
 
     const allowedGenders = ["male", "female"];
@@ -2387,6 +2653,21 @@ const createMyMarriedDaughter = async (req, res) => {
       });
     }
 
+    const normalizedPhone = String(phone).trim();
+    const normalizedHusbandPhone = String(husband_phone).trim();
+
+    if (!/^05[69]\d{7}$/.test(normalizedPhone)) {
+      return res.status(400).json({
+        message: "رقم جوال البنت يجب أن يبدأ بـ 059 أو 056 ويتكون من 10 أرقام.",
+      });
+    }
+
+    if (!/^05[69]\d{7}$/.test(normalizedHusbandPhone)) {
+      return res.status(400).json({
+        message: "رقم جوال الزوج يجب أن يبدأ بـ 059 أو 056 ويتكون من 10 أرقام.",
+      });
+    }
+
     const duplicateNationalId = await checkNationalIdGlobally({
       nationalId: national_id,
     });
@@ -2401,9 +2682,9 @@ const createMyMarriedDaughter = async (req, res) => {
       family_id: family.id,
       full_name: full_name.trim(),
       national_id: String(national_id),
-      phone: phone.trim(),
+      phone: normalizedPhone,
       husband_full_name: husband_full_name.trim(),
-      husband_phone: husband_phone.trim(),
+      husband_phone: normalizedHusbandPhone,
     });
 
     const daughter = await db("married_daughters")
@@ -2549,6 +2830,30 @@ const updateMyMarriedDaughter = async (req, res) => {
       });
     }
 
+    const normalizedPhone =
+      phone !== undefined ? String(phone).trim() : undefined;
+
+    const normalizedHusbandPhone =
+      husband_phone !== undefined ? String(husband_phone).trim() : undefined;
+
+    if (
+      normalizedPhone !== undefined &&
+      !/^05[69]\d{7}$/.test(normalizedPhone)
+    ) {
+      return res.status(400).json({
+        message: "رقم جوال البنت يجب أن يبدأ بـ 059 أو 056 ويتكون من 10 أرقام.",
+      });
+    }
+
+    if (
+      normalizedHusbandPhone !== undefined &&
+      !/^05[69]\d{7}$/.test(normalizedHusbandPhone)
+    ) {
+      return res.status(400).json({
+        message: "رقم جوال الزوج يجب أن يبدأ بـ 059 أو 056 ويتكون من 10 أرقام.",
+      });
+    }
+
     if (
       national_id !== undefined &&
       String(national_id) !== String(daughter.national_id)
@@ -2576,16 +2881,16 @@ const updateMyMarriedDaughter = async (req, res) => {
       updates.national_id = String(national_id);
     }
 
-    if (phone !== undefined) {
-      updates.phone = String(phone).trim();
+    if (normalizedPhone !== undefined) {
+      updates.phone = normalizedPhone;
     }
 
     if (husband_full_name !== undefined) {
       updates.husband_full_name = String(husband_full_name).trim();
     }
 
-    if (husband_phone !== undefined) {
-      updates.husband_phone = String(husband_phone).trim();
+    if (normalizedHusbandPhone !== undefined) {
+      updates.husband_phone = normalizedHusbandPhone;
     }
 
     if (Object.keys(updates).length === 0) {
@@ -2801,6 +3106,15 @@ const createMySpecialCase = async (req, res) => {
       });
     }
 
+    const birthDate = new Date(`${date_of_birth}T00:00:00`);
+    const today = new Date();
+
+    if (Number.isNaN(birthDate.getTime()) || birthDate > today) {
+      return res.status(400).json({
+        message: "تاريخ الميلاد غير صحيح ولا يمكن أن يكون في المستقبل.",
+      });
+    }
+
     const allowedCaseTypes = [
       "martyr",
       "injured",
@@ -3008,6 +3322,17 @@ const updateMySpecialCase = async (req, res) => {
       return res.status(400).json({
         message: "رقم الهوية يجب أن يتكون من 9 أرقام.",
       });
+    }
+
+    if (date_of_birth !== undefined) {
+      const birthDate = new Date(`${date_of_birth}T00:00:00`);
+      const today = new Date();
+
+      if (Number.isNaN(birthDate.getTime()) || birthDate > today) {
+        return res.status(400).json({
+          message: "تاريخ الميلاد غير صحيح ولا يمكن أن يكون في المستقبل.",
+        });
+      }
     }
 
     const allowedCaseTypes = [

@@ -80,6 +80,12 @@ const register = async (req, res) => {
     });
   }
 
+  if (!/^05[69]\d{7}$/.test(normalizedPhone)) {
+    return res.status(400).json({
+      message: "رقم الجوال يجب أن يبدأ بـ 059 أو 056 ويتكون من 10 أرقام.",
+    });
+  }
+
   if (String(password).length < 8) {
     return res.status(400).json({
       message: "كلمة المرور يجب ألا تقل عن 8 أحرف.",

@@ -881,6 +881,7 @@ const getMyEditingStatus = async (req, res) => {
     });
   }
 };
+
 const getMyFormCompletion = async (req, res) => {
   try {
     const family = await db("families")
@@ -893,6 +894,19 @@ const getMyFormCompletion = async (req, res) => {
         message: "سجل الأسرة غير موجود.",
       });
     }
+
+    const hasChildren =
+      family.has_children === null ? null : Boolean(family.has_children);
+
+    const hasSpecialCases =
+      family.has_special_cases === null
+        ? null
+        : Boolean(family.has_special_cases);
+
+    const hasMarriedDaughters =
+      family.has_married_daughters === null
+        ? null
+        : Boolean(family.has_married_daughters);
 
     const editingPermission = await getFamilyEditingPermission(family);
 
@@ -968,51 +982,51 @@ const getMyFormCompletion = async (req, res) => {
         name: "سؤال وجود الأبناء",
         required: true,
         applicable: true,
-        completed: family.has_children !== null,
+        completed: hasChildren !== null,
       },
       {
         key: "children",
         name: "بيانات الأبناء",
-        required: family.has_children === true,
-        applicable: family.has_children === true,
+        required: hasChildren === true,
+        applicable: hasChildren === true,
         completed:
-          family.has_children === true
+          hasChildren === true
             ? Number(childrenCount.count) > 0
-            : family.has_children === false,
+            : hasChildren === false,
       },
       {
         key: "special_cases_question",
         name: "سؤال وجود حالات خاصة",
         required: true,
         applicable: true,
-        completed: family.has_special_cases !== null,
+        completed: hasSpecialCases !== null,
       },
       {
         key: "special_cases",
         name: "الحالات الخاصة",
-        required: family.has_special_cases === true,
-        applicable: family.has_special_cases === true,
+        required: hasSpecialCases === true,
+        applicable: hasSpecialCases === true,
         completed:
-          family.has_special_cases === true
+          hasSpecialCases === true
             ? Number(specialCasesCount.count) > 0
-            : family.has_special_cases === false,
+            : hasSpecialCases === false,
       },
       {
         key: "married_daughters_question",
         name: "سؤال وجود بنات متزوجات",
         required: true,
         applicable: true,
-        completed: family.has_married_daughters !== null,
+        completed: hasMarriedDaughters !== null,
       },
       {
         key: "married_daughters",
         name: "البنات المتزوجات",
-        required: family.has_married_daughters === true,
-        applicable: family.has_married_daughters === true,
+        required: hasMarriedDaughters === true,
+        applicable: hasMarriedDaughters === true,
         completed:
-          family.has_married_daughters === true
+          hasMarriedDaughters === true
             ? Number(marriedDaughtersCount.count) > 0
-            : family.has_married_daughters === false,
+            : hasMarriedDaughters === false,
       },
     ];
 

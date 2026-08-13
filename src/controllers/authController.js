@@ -59,6 +59,23 @@ const register = async (req, res) => {
   }
 
   const normalizedFullName = String(full_name).trim();
+  const nameParts = normalizedFullName.split(/\s+/).filter(Boolean);
+
+  if (nameParts.length < 4) {
+    return res.status(400).json({
+      message: "اسم رب الأسرة يجب أن يتكون من 4 مقاطع على الأقل.",
+    });
+  }
+
+  const lastName = nameParts[nameParts.length - 1];
+
+  if (lastName !== "سلمان") {
+    return res.status(400).json({
+      message:
+        "التسجيل متاح فقط لأفراد عائلة سلمان، ويجب أن يكون اسم العائلة سلمان.",
+    });
+  }
+
   const normalizedNationalId = String(national_id).trim();
   const normalizedPhone = String(phone).trim();
 

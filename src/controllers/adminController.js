@@ -14,6 +14,7 @@ const ensureBackupsDirectory = async () => {
   });
 };
 
+// Helper
 const getBackupDatabaseConfig = () => ({
   host: process.env.DB_HOST,
   port: process.env.DB_PORT || "3306",
@@ -21,8 +22,6 @@ const getBackupDatabaseConfig = () => ({
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME || process.env.DB_DATABASE,
 });
-
-// Helper
 const getFamilyEditingPermission = async (family) => {
   if (!family) {
     return {
@@ -74,7 +73,6 @@ const getFamilyEditingPermission = async (family) => {
     editingOverride,
   };
 };
-
 const checkNationalIdGlobally = async ({
   nationalId,
   excludeTable = null,
@@ -180,6 +178,8 @@ const getFamilies = async (req, res) => {
 
     const editingEnabled = req.query.editing_enabled;
 
+    const deleted = req.query.deleted;
+
     const allowedStatuses = ["draft", "submitted"];
 
     if (status && !allowedStatuses.includes(status)) {
@@ -197,9 +197,23 @@ const getFamilies = async (req, res) => {
       });
     }
 
-    const baseQuery = db("families")
-      .leftJoin("users", "families.user_id", "users.id")
-      .whereNull("families.deleted_at");
+    if (deleted !== undefined && !["true", "false"].includes(deleted)) {
+      return res.status(400).json({
+        message: "قيمة deleted يجب أن تكون true أو false.",
+      });
+    }
+
+    const baseQuery = db("families").leftJoin(
+      "users",
+      "families.user_id",
+      "users.id",
+    );
+
+    if (deleted === "true") {
+      baseQuery.whereNotNull("families.deleted_at");
+    } else {
+      baseQuery.whereNull("families.deleted_at");
+    }
 
     if (search) {
       baseQuery.andWhere((queryBuilder) => {
@@ -247,6 +261,8 @@ const getFamilies = async (req, res) => {
         "families.editing_enabled",
         "families.submitted_at",
         "families.created_at",
+        "families.deleted_at",
+        "families.deleted_by",
 
         "family_housing.previous_area",
 
@@ -303,6 +319,8 @@ const getFamilies = async (req, res) => {
 
           editing_enabled:
             editingEnabled === undefined ? null : editingEnabled === "true",
+
+          deleted: deleted === undefined ? null : deleted === "true",
         },
       },
     });
@@ -314,7 +332,6 @@ const getFamilies = async (req, res) => {
     });
   }
 };
-
 const getFamilyDetails = async (req, res) => {
   try {
     const familyId = Number(req.params.familyId);
@@ -1277,6 +1294,7 @@ const updateFamilyFormStatus = async (req, res) => {
     });
   }
 };
+
 // Export
 const exportFamiliesExcel = async (req, res) => {
   try {
@@ -1496,7 +1514,19 @@ const exportFamiliesExcel = async (req, res) => {
       };
 
       rows.forEach((row) => {
-        worksheet.addRow(row);
+        const cleanedRow = Object.fromEntries(
+          Object.entries(row).map(([key, value]) => [
+            key,
+            value === null ||
+            value === undefined ||
+            value === "null" ||
+            value === "undefined"
+              ? ""
+              : value,
+          ]),
+        );
+
+        worksheet.addRow(cleanedRow);
       });
 
       worksheet.eachRow((row) => {
@@ -1665,7 +1695,32 @@ const exportFamiliesExcel = async (req, res) => {
           width: 35,
         },
       ],
-      housing,
+      housing.map((item) => ({
+        ...item,
+
+        previous_area:
+          {
+            north_gaza: "شمال غزة",
+            gaza: "غزة",
+            middle_area: "المنطقة الوسطى",
+            south_gaza: "جنوب غزة",
+          }[item.previous_area] || item.previous_area,
+
+        current_housing_type:
+          {
+            owned: "ملك",
+            rented: "إيجار",
+            displaced: "نازح",
+          }[item.current_housing_type] || item.current_housing_type,
+
+        displacement_type:
+          {
+            tent: "خيمة",
+            relatives_house: "منزل أقارب",
+          }[item.displacement_type] ||
+          item.displacement_type ||
+          "",
+      })),
     );
 
     addWorksheet(
@@ -1712,7 +1767,15 @@ const exportFamiliesExcel = async (req, res) => {
           width: 22,
         },
       ],
-      wives,
+      wives.map((wife) => ({
+        ...wife,
+
+        employment_status:
+          {
+            housewife: "ربة منزل",
+            employee: "موظفة",
+          }[wife.employment_status] || wife.employment_status,
+      })),
     );
 
     addWorksheet(
@@ -1754,7 +1817,19 @@ const exportFamiliesExcel = async (req, res) => {
           width: 30,
         },
       ],
-      children,
+      children.map((child) => ({
+        ...child,
+
+        education_status:
+          {
+            under_6: "طفل أقل من 6 سنوات",
+            school: "مدرسة",
+            university: "جامعة",
+            not_studying: "لا يدرس",
+          }[child.education_status] || child.education_status,
+
+        institution_name: child.institution_name || "",
+      })),
     );
 
     addWorksheet(
@@ -1843,7 +1918,18 @@ const exportFamiliesExcel = async (req, res) => {
           width: 45,
         },
       ],
-      specialCases,
+      specialCases.map((specialCase) => ({
+        ...specialCase,
+
+        case_type:
+          {
+            patient: "مريض",
+            martyr: "شهيد",
+            injured: "جريح",
+            disability: "ذوي إعاقة",
+            pregnant: "حامل",
+          }[specialCase.case_type] || specialCase.case_type,
+      })),
     );
 
     const fileName = `salman-families-${new Date()
@@ -1868,6 +1954,7 @@ const exportFamiliesExcel = async (req, res) => {
     });
   }
 };
+
 // system_settings
 const getSystemSettings = async (req, res) => {
   try {
@@ -2177,10 +2264,10 @@ const closeGlobalEditing = async (req, res) => {
     });
   }
 };
+
 // =========================
 // Admin Backups
 // =========================
-
 const createBackup = async (req, res) => {
   try {
     const { host, port, user, password, database } = getBackupDatabaseConfig();

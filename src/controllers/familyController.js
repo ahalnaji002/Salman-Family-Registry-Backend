@@ -116,6 +116,33 @@ const checkNationalIdGlobally = async ({
     }
   }
 
+  // نفحص فقط الشهيد والمتوفى من الحالات الخاصة،
+  // لأن الحالات الأخرى قد تكون مرتبطة بشخص موجود أصلًا في الأسرة.
+  let specialCaseQuery = db("special_cases")
+    .where({
+      national_id: normalizedNationalId,
+    })
+    .whereIn("case_type", ["martyr", "deceased"]);
+
+  if (excludeTable === "special_cases" && excludeId !== null) {
+    specialCaseQuery = specialCaseQuery.whereNot({
+      id: excludeId,
+    });
+  }
+
+  const existingSpecialCase = await specialCaseQuery
+    .select("id", "case_type")
+    .first();
+
+  if (existingSpecialCase) {
+    return {
+      exists: true,
+      table: "special_cases",
+      label: existingSpecialCase.case_type === "martyr" ? "شهيد/ة" : "متوفى/ة",
+      id: existingSpecialCase.id,
+    };
+  }
+
   return {
     exists: false,
   };
@@ -135,7 +162,10 @@ const getMyFamily = async (req, res) => {
         db.raw("DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth"),
         "phone",
         "blood_type",
+        "gender",
         "marital_status",
+        "deceased_spouse_from_salman",
+        "deceased_spouse_case_type",
         "has_children",
         "has_special_cases",
         "has_married_daughters",
@@ -276,7 +306,10 @@ const updateMyFamily = async (req, res) => {
       phone,
       date_of_birth,
       blood_type,
+      gender,
       marital_status,
+      deceased_spouse_from_salman,
+      deceased_spouse_case_type,
       income_category,
       work_status,
       job_type,
@@ -323,6 +356,14 @@ const updateMyFamily = async (req, res) => {
 
     const allowedMaritalStatuses = ["single", "married", "divorced", "widowed"];
 
+    const allowedGenders = ["male", "female"];
+
+    if (gender !== undefined && !allowedGenders.includes(gender)) {
+      return res.status(400).json({
+        message: "الجنس غير صحيح.",
+      });
+    }
+
     const allowedIncomeCategories = ["0-1000", "1000-3000", "3000+"];
 
     const allowedWorkStatuses = ["employee", "worker", "not_working"];
@@ -336,6 +377,94 @@ const updateMyFamily = async (req, res) => {
       return res.status(400).json({
         message: "الحالة الاجتماعية غير صحيحة.",
       });
+    }
+
+    const allowedDeceasedSpouseCaseTypes = ["martyr", "deceased"];
+
+    if (
+      deceased_spouse_from_salman !== undefined &&
+      deceased_spouse_from_salman !== null &&
+      typeof deceased_spouse_from_salman !== "boolean"
+    ) {
+      return res.status(400).json({
+        message:
+          "قيمة انتماء الزوج أو الزوجة المتوفى/ة لعائلة سلمان غير صحيحة.",
+      });
+    }
+
+    if (
+      deceased_spouse_case_type !== undefined &&
+      deceased_spouse_case_type !== null &&
+      !allowedDeceasedSpouseCaseTypes.includes(deceased_spouse_case_type)
+    ) {
+      return res.status(400).json({
+        message: "نوع وفاة الزوج أو الزوجة غير صحيح.",
+      });
+    }
+
+    const finalGender = gender !== undefined ? gender : family.gender;
+
+    const finalMaritalStatus =
+      marital_status !== undefined ? marital_status : family.marital_status;
+
+    if (
+      finalGender === "female" &&
+      !["divorced", "widowed"].includes(finalMaritalStatus)
+    ) {
+      return res.status(400).json({
+        message:
+          "المرأة يمكن أن يكون لها سجل مستقل فقط إذا كانت مطلقة أو أرملة.",
+      });
+    }
+
+    let finalDeceasedSpouseFromSalman =
+      deceased_spouse_from_salman !== undefined
+        ? deceased_spouse_from_salman
+        : family.deceased_spouse_from_salman;
+
+    let finalDeceasedSpouseCaseType =
+      deceased_spouse_case_type !== undefined
+        ? deceased_spouse_case_type
+        : family.deceased_spouse_case_type;
+
+    // إذا لم تكن الحالة أرمل/أرملة، نمسح بيانات الزوج/الزوجة المتوفى/ة
+    if (finalMaritalStatus !== "widowed") {
+      finalDeceasedSpouseFromSalman = null;
+      finalDeceasedSpouseCaseType = null;
+    }
+
+    // إذا كانت الحالة أرمل/أرملة، يجب تحديد هل المتوفى/ة من عائلة سلمان
+    if (
+      finalMaritalStatus === "widowed" &&
+      finalDeceasedSpouseFromSalman === null
+    ) {
+      return res.status(400).json({
+        message:
+          "يرجى تحديد ما إذا كان الزوج أو الزوجة المتوفى/ة من عائلة سلمان.",
+      });
+    }
+
+    const mustHaveDeceasedSpouseCase =
+      finalMaritalStatus === "widowed" &&
+      finalDeceasedSpouseFromSalman === true;
+
+    // إذا كان المتوفى/ة من عائلة سلمان، يجب تحديد نوع الوفاة
+    if (
+      finalMaritalStatus === "widowed" &&
+      finalDeceasedSpouseFromSalman === true &&
+      !finalDeceasedSpouseCaseType
+    ) {
+      return res.status(400).json({
+        message: "يرجى تحديد هل الوفاة استشهاد أم وفاة أخرى.",
+      });
+    }
+
+    // إذا لم يكن المتوفى/ة من عائلة سلمان، لا نحتاج نوع الوفاة
+    if (
+      finalMaritalStatus === "widowed" &&
+      finalDeceasedSpouseFromSalman === false
+    ) {
+      finalDeceasedSpouseCaseType = null;
     }
 
     const dynamicSectionAnswers = [
@@ -490,15 +619,25 @@ const updateMyFamily = async (req, res) => {
       familyUpdates.blood_type = blood_type;
     }
 
+    if (gender !== undefined) {
+      familyUpdates.gender = gender;
+    }
+
     if (marital_status !== undefined) {
       familyUpdates.marital_status = marital_status;
     }
+
+    familyUpdates.deceased_spouse_from_salman = finalDeceasedSpouseFromSalman;
+
+    familyUpdates.deceased_spouse_case_type = finalDeceasedSpouseCaseType;
 
     if (has_children !== undefined) {
       familyUpdates.has_children = has_children;
     }
 
-    if (has_special_cases !== undefined) {
+    if (mustHaveDeceasedSpouseCase) {
+      familyUpdates.has_special_cases = true;
+    } else if (has_special_cases !== undefined) {
       familyUpdates.has_special_cases = has_special_cases;
     }
 
@@ -536,8 +675,11 @@ const updateMyFamily = async (req, res) => {
       national_id,
       phone,
       date_of_birth,
+      gender,
       blood_type,
       marital_status,
+      deceased_spouse_from_salman,
+      deceased_spouse_case_type,
       income_category,
       work_status,
       job_type,
@@ -587,7 +729,10 @@ const updateMyFamily = async (req, res) => {
         db.raw("DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth"),
         "phone",
         "blood_type",
+        "gender",
         "marital_status",
+        "deceased_spouse_from_salman",
+        "deceased_spouse_case_type",
         "has_children",
         "has_special_cases",
         "has_married_daughters",
@@ -940,6 +1085,21 @@ const getMyFormCompletion = async (req, res) => {
         .first(),
     ]);
 
+    const expectedDeceasedSpouseRelationship =
+      family.gender === "female" ? "زوج" : "زوجة";
+
+    const deceasedSpouseCase =
+      family.marital_status === "widowed" &&
+      Boolean(family.deceased_spouse_from_salman)
+        ? await db("special_cases")
+            .where({
+              family_id: family.id,
+              case_type: family.deceased_spouse_case_type,
+              relationship: expectedDeceasedSpouseRelationship,
+            })
+            .first()
+        : null;
+
     const sections = [
       {
         key: "family_head",
@@ -950,9 +1110,14 @@ const getMyFormCompletion = async (req, res) => {
           family.national_id &&
           family.date_of_birth &&
           family.phone &&
+          family.gender &&
           family.marital_status &&
           family.income_category &&
-          family.work_status,
+          family.work_status &&
+          (family.marital_status !== "widowed" ||
+            (family.deceased_spouse_from_salman != null &&
+              (!Boolean(family.deceased_spouse_from_salman) ||
+                Boolean(family.deceased_spouse_case_type)))),
         ),
       },
       {
@@ -970,10 +1135,14 @@ const getMyFormCompletion = async (req, res) => {
       {
         key: "wives",
         name: "بيانات الزوجة",
-        required: family.marital_status === "married",
-        applicable: family.marital_status === "married",
+        required:
+          family.gender === "male" && family.marital_status === "married",
+
+        applicable:
+          family.gender === "male" && family.marital_status === "married",
+
         completed:
-          family.marital_status === "married"
+          family.gender === "male" && family.marital_status === "married"
             ? Number(wivesCount.count) > 0
             : true,
       },
@@ -1010,6 +1179,23 @@ const getMyFormCompletion = async (req, res) => {
           hasSpecialCases === true
             ? Number(specialCasesCount.count) > 0
             : hasSpecialCases === false,
+      },
+      {
+        key: "deceased_spouse",
+        name: "بيانات الزوج/الزوجة المتوفى/ة",
+        required:
+          family.marital_status === "widowed" &&
+          Boolean(family.deceased_spouse_from_salman),
+
+        applicable:
+          family.marital_status === "widowed" &&
+          Boolean(family.deceased_spouse_from_salman),
+
+        completed:
+          family.marital_status === "widowed" &&
+          Boolean(family.deceased_spouse_from_salman)
+            ? Boolean(deceasedSpouseCase)
+            : true,
       },
       {
         key: "married_daughters_question",
@@ -1117,14 +1303,50 @@ const submitMyFamilyForm = async (req, res) => {
       });
     }
 
-    const [housing, wivesCount] = await Promise.all([
+    const [
+      housing,
+      wivesCount,
+      childrenCount,
+      specialCasesCount,
+      marriedDaughtersCount,
+    ] = await Promise.all([
       db("family_housing").where({ family_id: family.id }).first(),
 
       db("wives")
         .where({ family_id: family.id })
         .count({ count: "id" })
         .first(),
+
+      db("children")
+        .where({ family_id: family.id })
+        .count({ count: "id" })
+        .first(),
+
+      db("special_cases")
+        .where({ family_id: family.id })
+        .count({ count: "id" })
+        .first(),
+
+      db("married_daughters")
+        .where({ family_id: family.id })
+        .count({ count: "id" })
+        .first(),
     ]);
+
+    const expectedDeceasedSpouseRelationship =
+      family.gender === "female" ? "زوج" : "زوجة";
+
+    const deceasedSpouseCase =
+      family.marital_status === "widowed" &&
+      Boolean(family.deceased_spouse_from_salman)
+        ? await db("special_cases")
+            .where({
+              family_id: family.id,
+              case_type: family.deceased_spouse_case_type,
+              relationship: expectedDeceasedSpouseRelationship,
+            })
+            .first()
+        : null;
 
     const missingFields = [];
 
@@ -1144,8 +1366,37 @@ const submitMyFamilyForm = async (req, res) => {
       missingFields.push("رقم الهاتف");
     }
 
+    if (!family.gender) {
+      missingFields.push("الجنس");
+    }
+
     if (!family.marital_status) {
       missingFields.push("الحالة الاجتماعية");
+    }
+
+    if (
+      family.marital_status === "widowed" &&
+      family.deceased_spouse_from_salman == null
+    ) {
+      missingFields.push(
+        "تحديد ما إذا كان الزوج أو الزوجة المتوفى/ة من عائلة سلمان",
+      );
+    }
+
+    if (
+      family.marital_status === "widowed" &&
+      Boolean(family.deceased_spouse_from_salman) &&
+      !family.deceased_spouse_case_type
+    ) {
+      missingFields.push("تحديد نوع وفاة الزوج أو الزوجة");
+    }
+
+    if (
+      family.marital_status === "widowed" &&
+      Boolean(family.deceased_spouse_from_salman) &&
+      !deceasedSpouseCase
+    ) {
+      missingFields.push("بيانات الزوج أو الزوجة المتوفى/ة");
     }
 
     if (!family.income_category) {
@@ -1168,7 +1419,11 @@ const submitMyFamilyForm = async (req, res) => {
       missingFields.push("بيانات السكن");
     }
 
-    if (family.marital_status === "married" && Number(wivesCount.count) === 0) {
+    if (
+      family.gender === "male" &&
+      family.marital_status === "married" &&
+      Number(wivesCount.count) === 0
+    ) {
       missingFields.push("بيانات الزوجة");
     }
 
@@ -2012,7 +2267,7 @@ const deleteMyWife = async (req, res) => {
           family_id: family.id,
           national_id: wife.national_id,
         })
-        .whereNot("case_type", "martyr")
+        .whereNotIn("case_type", ["martyr", "deceased"])
         .delete();
 
       await trx("wives")
@@ -2550,7 +2805,7 @@ const deleteMyChild = async (req, res) => {
           family_id: family.id,
           national_id: child.national_id,
         })
-        .whereNot("case_type", "martyr")
+        .whereNotIn("case_type", ["martyr", "deceased"])
         .delete();
 
       await trx("children")
@@ -3131,6 +3386,7 @@ const createMySpecialCase = async (req, res) => {
 
     const allowedCaseTypes = [
       "martyr",
+      "deceased",
       "injured",
       "disability",
       "patient",
@@ -3145,7 +3401,7 @@ const createMySpecialCase = async (req, res) => {
 
     // الشهيد يعتبر شخصًا مستقلًا، لذلك هويته يجب ألا تكون
     // مستخدمة في أي شخص أساسي داخل النظام
-    if (case_type === "martyr") {
+    if (["martyr", "deceased"].includes(case_type)) {
       const duplicateNationalId = await checkNationalIdGlobally({
         nationalId: normalizedNationalId,
       });
@@ -3351,6 +3607,7 @@ const updateMySpecialCase = async (req, res) => {
 
     const allowedCaseTypes = [
       "martyr",
+      "deceased",
       "injured",
       "disability",
       "patient",
@@ -3368,9 +3625,11 @@ const updateMySpecialCase = async (req, res) => {
 
     // إذا أصبحت الحالة شهيدًا، يجب أن تكون الهوية
     // غير مستخدمة لأي شخص أساسي في النظام
-    if (finalCaseType === "martyr") {
+    if (["martyr", "deceased"].includes(finalCaseType)) {
       const duplicateNationalId = await checkNationalIdGlobally({
         nationalId: normalizedNationalId,
+        excludeTable: "special_cases",
+        excludeId: caseId,
       });
 
       if (duplicateNationalId.exists) {

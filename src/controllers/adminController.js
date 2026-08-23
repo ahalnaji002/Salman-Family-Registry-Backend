@@ -1,13 +1,10 @@
 const db = require("../config/database");
 const bcrypt = require("bcryptjs");
 const ExcelJS = require("exceljs");
-
 const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
-
 const BACKUPS_DIR = path.join(process.cwd(), "backups");
-
 const ensureBackupsDirectory = async () => {
   await fs.promises.mkdir(BACKUPS_DIR, {
     recursive: true,
@@ -108,6 +105,31 @@ const checkNationalIdGlobally = async ({
         id: existing.id,
       };
     }
+  }
+
+  let specialCaseQuery = db("special_cases")
+    .where({
+      national_id: normalizedNationalId,
+    })
+    .whereIn("case_type", ["martyr", "deceased"]);
+
+  if (excludeTable === "special_cases" && excludeId !== null) {
+    specialCaseQuery = specialCaseQuery.whereNot({
+      id: excludeId,
+    });
+  }
+
+  const existingSpecialCase = await specialCaseQuery
+    .select("id", "case_type")
+    .first();
+
+  if (existingSpecialCase) {
+    return {
+      exists: true,
+      table: "special_cases",
+      label: existingSpecialCase.case_type === "martyr" ? "شهيد/ة" : "متوفى/ة",
+      id: existingSpecialCase.id,
+    };
   }
 
   return {
@@ -249,11 +271,10 @@ const getFamilies = async (req, res) => {
         "families.full_name",
         "families.national_id",
         "families.phone",
-
         db.raw(
           "DATE_FORMAT(families.date_of_birth, '%Y-%m-%d') as date_of_birth",
         ),
-
+        "families.gender",
         "families.marital_status",
         "families.income_category",
         "families.work_status",
@@ -295,6 +316,21 @@ const getFamilies = async (req, res) => {
       data: {
         families: families.map((family) => ({
           ...family,
+
+          gender: family.gender || null,
+
+          marital_status_label:
+            family.gender === "female"
+              ? {
+                  divorced: "مطلقة",
+                  widowed: "أرملة",
+                }[family.marital_status] || family.marital_status
+              : {
+                  single: "أعزب",
+                  married: "متزوج",
+                  divorced: "مطلق",
+                  widowed: "أرمل",
+                }[family.marital_status] || family.marital_status,
 
           editing_enabled: Boolean(family.editing_enabled),
 
@@ -358,7 +394,10 @@ const getFamilyDetails = async (req, res) => {
 
         "families.phone",
         "families.blood_type",
+        "families.gender",
         "families.marital_status",
+        "families.deceased_spouse_from_salman",
+        "families.deceased_spouse_case_type",
         "families.income_category",
         "families.work_status",
         "families.job_type",
@@ -422,6 +461,11 @@ const getFamilyDetails = async (req, res) => {
           editing_enabled: Boolean(family.editing_enabled),
 
           user_is_active: Boolean(family.user_is_active),
+
+          deceased_spouse_from_salman:
+            family.deceased_spouse_from_salman === null
+              ? null
+              : Boolean(family.deceased_spouse_from_salman),
         },
 
         housing: housing || null,
@@ -460,7 +504,10 @@ const createFamily = async (req, res) => {
     password,
     date_of_birth,
     blood_type,
+    gender,
     marital_status,
+    deceased_spouse_from_salman,
+    deceased_spouse_case_type,
     income_category,
     work_status,
     job_type,
@@ -473,6 +520,7 @@ const createFamily = async (req, res) => {
     !phone ||
     !password ||
     !date_of_birth ||
+    !gender ||
     !marital_status ||
     !income_category ||
     !work_status
@@ -500,17 +548,55 @@ const createFamily = async (req, res) => {
 
   const allowedMaritalStatuses = ["single", "married", "divorced", "widowed"];
 
-  const allowedIncomeCategories = ["0-1000", "1000-3000", "3000+"];
-
-  const allowedWorkStatuses = ["employee", "worker", "not_working"];
-
-  const allowedJobTypes = ["government", "private", "other"];
+  const allowedGenders = ["male", "female"];
+  const allowedDeceasedSpouseCaseTypes = ["martyr", "deceased"];
 
   if (!allowedMaritalStatuses.includes(marital_status)) {
     return res.status(400).json({
       message: "الحالة الاجتماعية غير صحيحة.",
     });
   }
+
+  if (!allowedGenders.includes(gender)) {
+    return res.status(400).json({
+      message: "الجنس غير صحيح.",
+    });
+  }
+
+  if (
+    gender === "female" &&
+    !["divorced", "widowed"].includes(marital_status)
+  ) {
+    return res.status(400).json({
+      message: "المرأة يمكن أن يكون لها سجل مستقل فقط إذا كانت مطلقة أو أرملة.",
+    });
+  }
+
+  if (marital_status === "widowed" && deceased_spouse_from_salman == null) {
+    return res.status(400).json({
+      message:
+        "يرجى تحديد ما إذا كان الزوج أو الزوجة المتوفى/ة من عائلة سلمان.",
+    });
+  }
+
+  if (
+    marital_status === "widowed" &&
+    deceased_spouse_from_salman === true &&
+    !allowedDeceasedSpouseCaseTypes.includes(deceased_spouse_case_type)
+  ) {
+    return res.status(400).json({
+      message: "يرجى تحديد نوع وفاة الزوج أو الزوجة.",
+    });
+  }
+
+  const mustHaveDeceasedSpouseCase =
+    marital_status === "widowed" && deceased_spouse_from_salman === true;
+
+  const allowedIncomeCategories = ["0-1000", "1000-3000", "3000+"];
+
+  const allowedWorkStatuses = ["employee", "worker", "not_working"];
+
+  const allowedJobTypes = ["government", "private", "other"];
 
   if (!allowedIncomeCategories.includes(income_category)) {
     return res.status(400).json({
@@ -611,7 +697,19 @@ const createFamily = async (req, res) => {
         date_of_birth,
         phone: normalizedPhone,
         blood_type: blood_type || null,
+        gender,
         marital_status,
+
+        deceased_spouse_from_salman:
+          marital_status === "widowed" ? deceased_spouse_from_salman : null,
+
+        deceased_spouse_case_type:
+          marital_status === "widowed" && deceased_spouse_from_salman === true
+            ? deceased_spouse_case_type
+            : null,
+
+        has_special_cases: mustHaveDeceasedSpouseCase ? true : null,
+
         income_category,
         work_status,
 
@@ -695,7 +793,10 @@ const updateFamily = async (req, res) => {
       phone,
       date_of_birth,
       blood_type,
+      gender,
       marital_status,
+      deceased_spouse_from_salman,
+      deceased_spouse_case_type,
       income_category,
       work_status,
       job_type,
@@ -715,6 +816,97 @@ const updateFamily = async (req, res) => {
     }
 
     const allowedMaritalStatuses = ["single", "married", "divorced", "widowed"];
+
+    const allowedGenders = ["male", "female"];
+    const allowedDeceasedSpouseCaseTypes = ["martyr", "deceased"];
+
+    if (gender !== undefined && !allowedGenders.includes(gender)) {
+      return res.status(400).json({
+        message: "الجنس غير صحيح.",
+      });
+    }
+
+    if (
+      deceased_spouse_from_salman !== undefined &&
+      deceased_spouse_from_salman !== null &&
+      typeof deceased_spouse_from_salman !== "boolean"
+    ) {
+      return res.status(400).json({
+        message:
+          "قيمة انتماء الزوج أو الزوجة المتوفى/ة لعائلة سلمان غير صحيحة.",
+      });
+    }
+
+    if (
+      deceased_spouse_case_type !== undefined &&
+      deceased_spouse_case_type !== null &&
+      !allowedDeceasedSpouseCaseTypes.includes(deceased_spouse_case_type)
+    ) {
+      return res.status(400).json({
+        message: "نوع وفاة الزوج أو الزوجة غير صحيح.",
+      });
+    }
+
+    const finalGender = gender !== undefined ? gender : family.gender;
+
+    const finalMaritalStatus =
+      marital_status !== undefined ? marital_status : family.marital_status;
+
+    let finalDeceasedSpouseFromSalman =
+      deceased_spouse_from_salman !== undefined
+        ? deceased_spouse_from_salman
+        : family.deceased_spouse_from_salman;
+
+    let finalDeceasedSpouseCaseType =
+      deceased_spouse_case_type !== undefined
+        ? deceased_spouse_case_type
+        : family.deceased_spouse_case_type;
+
+    if (
+      finalGender === "female" &&
+      !["divorced", "widowed"].includes(finalMaritalStatus)
+    ) {
+      return res.status(400).json({
+        message:
+          "المرأة يمكن أن يكون لها سجل مستقل فقط إذا كانت مطلقة أو أرملة.",
+      });
+    }
+
+    if (finalMaritalStatus !== "widowed") {
+      finalDeceasedSpouseFromSalman = null;
+      finalDeceasedSpouseCaseType = null;
+    }
+
+    if (
+      finalMaritalStatus === "widowed" &&
+      finalDeceasedSpouseFromSalman == null
+    ) {
+      return res.status(400).json({
+        message:
+          "يرجى تحديد ما إذا كان الزوج أو الزوجة المتوفى/ة من عائلة سلمان.",
+      });
+    }
+
+    if (
+      finalMaritalStatus === "widowed" &&
+      finalDeceasedSpouseFromSalman === true &&
+      !finalDeceasedSpouseCaseType
+    ) {
+      return res.status(400).json({
+        message: "يرجى تحديد هل الوفاة استشهاد أم وفاة أخرى.",
+      });
+    }
+
+    if (
+      finalMaritalStatus === "widowed" &&
+      finalDeceasedSpouseFromSalman === false
+    ) {
+      finalDeceasedSpouseCaseType = null;
+    }
+
+    const mustHaveDeceasedSpouseCase =
+      finalMaritalStatus === "widowed" &&
+      finalDeceasedSpouseFromSalman === true;
 
     const allowedIncomeCategories = ["0-1000", "1000-3000", "3000+"];
 
@@ -833,6 +1025,9 @@ const updateFamily = async (req, res) => {
       phone,
       date_of_birth,
       blood_type,
+      gender,
+      deceased_spouse_from_salman,
+      deceased_spouse_case_type,
       marital_status,
       income_category,
       work_status,
@@ -871,8 +1066,20 @@ const updateFamily = async (req, res) => {
       familyUpdates.blood_type = blood_type;
     }
 
+    if (gender !== undefined) {
+      familyUpdates.gender = gender;
+    }
+
     if (marital_status !== undefined) {
       familyUpdates.marital_status = marital_status;
+    }
+
+    familyUpdates.deceased_spouse_from_salman = finalDeceasedSpouseFromSalman;
+
+    familyUpdates.deceased_spouse_case_type = finalDeceasedSpouseCaseType;
+
+    if (mustHaveDeceasedSpouseCase) {
+      familyUpdates.has_special_cases = true;
     }
 
     if (income_category !== undefined) {
@@ -931,6 +1138,9 @@ const updateFamily = async (req, res) => {
         "phone",
         db.raw("DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth"),
         "blood_type",
+        "gender",
+        "deceased_spouse_from_salman",
+        "deceased_spouse_case_type",
         "marital_status",
         "income_category",
         "work_status",
@@ -956,6 +1166,11 @@ const updateFamily = async (req, res) => {
             updatedFamily.editing_override === null
               ? null
               : Boolean(updatedFamily.editing_override),
+
+          deceased_spouse_from_salman:
+            updatedFamily.deceased_spouse_from_salman === null
+              ? null
+              : Boolean(updatedFamily.deceased_spouse_from_salman),
         },
       },
     });
@@ -1360,6 +1575,9 @@ const exportFamiliesExcel = async (req, res) => {
         db.raw("DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth"),
         "phone",
         "blood_type",
+        "gender",
+        "deceased_spouse_from_salman",
+        "deceased_spouse_case_type",
         "marital_status",
         "income_category",
         "work_status",
@@ -1450,6 +1668,7 @@ const exportFamiliesExcel = async (req, res) => {
               "full_name",
               "national_id",
               db.raw("DATE_FORMAT(date_of_birth, '%Y-%m-%d') as date_of_birth"),
+              "gender",
               "education_status",
               "institution_name",
             ),
@@ -1573,6 +1792,21 @@ const exportFamiliesExcel = async (req, res) => {
           width: 14,
         },
         {
+          header: "الجنس",
+          key: "gender",
+          width: 12,
+        },
+        {
+          header: "هل الزوج/الزوجة المتوفى/ة من عائلة سلمان",
+          key: "deceased_spouse_from_salman",
+          width: 30,
+        },
+        {
+          header: "نوع وفاة الزوج/الزوجة",
+          key: "deceased_spouse_case_type",
+          width: 24,
+        },
+        {
           header: "الحالة الاجتماعية",
           key: "marital_status",
           width: 18,
@@ -1622,13 +1856,40 @@ const exportFamiliesExcel = async (req, res) => {
       families.map((family) => ({
         ...family,
 
-        marital_status:
+        gender:
           {
-            single: "أعزب",
-            married: "متزوج",
-            divorced: "مطلق",
-            widowed: "أرمل",
-          }[family.marital_status] || family.marital_status,
+            male: "ذكر",
+            female: "أنثى",
+          }[family.gender] || family.gender,
+
+        deceased_spouse_from_salman:
+          family.deceased_spouse_from_salman === null ||
+          family.deceased_spouse_from_salman === undefined
+            ? ""
+            : family.deceased_spouse_from_salman
+              ? "نعم"
+              : "لا",
+
+        deceased_spouse_case_type:
+          {
+            martyr: "استشهاد",
+            deceased: "وفاة أخرى",
+          }[family.deceased_spouse_case_type] ||
+          family.deceased_spouse_case_type ||
+          "",
+
+        marital_status:
+          family.gender === "female"
+            ? {
+                divorced: "مطلقة",
+                widowed: "أرملة",
+              }[family.marital_status] || family.marital_status
+            : {
+                single: "أعزب",
+                married: "متزوج",
+                divorced: "مطلق",
+                widowed: "أرمل",
+              }[family.marital_status] || family.marital_status,
 
         income_category:
           {
@@ -1807,6 +2068,11 @@ const exportFamiliesExcel = async (req, res) => {
           width: 16,
         },
         {
+          header: "الجنس",
+          key: "gender",
+          width: 12,
+        },
+        {
           header: "الحالة التعليمية",
           key: "education_status",
           width: 20,
@@ -1819,6 +2085,12 @@ const exportFamiliesExcel = async (req, res) => {
       ],
       children.map((child) => ({
         ...child,
+
+        gender:
+          {
+            male: "ذكر",
+            female: "أنثى",
+          }[child.gender] || child.gender,
 
         education_status:
           {
@@ -1925,6 +2197,7 @@ const exportFamiliesExcel = async (req, res) => {
           {
             patient: "مريض",
             martyr: "شهيد",
+            deceased: "متوفى",
             injured: "جريح",
             disability: "ذوي إعاقة",
             pregnant: "حامل",
@@ -2265,9 +2538,7 @@ const closeGlobalEditing = async (req, res) => {
   }
 };
 
-// =========================
 // Admin Backups
-// =========================
 const createBackup = async (req, res) => {
   try {
     const { host, port, user, password, database } = getBackupDatabaseConfig();

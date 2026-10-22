@@ -20,20 +20,30 @@
 - **الواجهة الأمامية:** تطبيق React مستقل ([مستودع Frontend](https://github.com/ahalnaji002/Salman-Family-Registry-Frontend)).
 
 ## هيكلية المشروع
-الملفات والمسارات التالية مؤكدة من المستودع:
+نظرة عامة على المجلدات الأساسية وملفات التشغيل والإعدادات دون سرد الملفات الداخلية:
 
 ```text
-.
-├── src/
-│   ├── server.js
-│   ├── app.js                  # يستورده server.js
-│   ├── config/
-│   │   └── database           # يستورده server.js
-│   └── routes/
-│       └── authRoutes.js
+backend/
+├── backups/
+├── database/
+│   ├── migrations/
+│   └── seeds/
 ├── scripts/
-│   └── createAdmin.js
+├── src/
+│   ├── config/
+│   ├── controllers/
+│   ├── middlewares/
+│   ├── models/
+│   ├── routes/
+│   ├── services/
+│   ├── uploads/
+│   │   └── family-photos/
+│   ├── utils/
+│   ├── validators/
+│   ├── app.js
+│   └── server.js
 ├── .env.example
+├── knexfile.js
 ├── package.json
 ├── README.md
 └── README.ar.md

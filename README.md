@@ -6,8 +6,8 @@
 REST API for the Salman Family Registry, handling authentication, access control, household records, system settings, Excel exports, and database backups.
 
 ## Features
-- JWT authentication, password changes, and code-based password recovery.
-- Separate administrator and family-head permissions.
+- JWT authentication and password changes. The API implements verification-code generation, validation, and password reset; automated SMS delivery is planned but not connected yet. The current frontend directs users to WhatsApp support for password recovery.
+- Role-based access for administrators and family heads, plus supervisor role and permission management. Current `/api/admin` routes require the `admin` role.
 - Family, housing, wives, children, married daughters, and special-case records.
 - Profile image uploads, administrator management, Excel exports, and database backups.
 - Soft deletion and restoration of family records.
@@ -63,25 +63,23 @@ Configure `.env` with `PORT`, `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `D
 
 ```bash
 npm run migrate
-npm run seed
+npm run seed  # Development only: includes a seeded admin account with fixed credentials
 npm run dev
 ```
 
-For production, run `npm start`. An administrator account can be created using `scripts/createAdmin.js` with the required environment settings.
+For production, run `npm start`. Do not use the development seed administrator in production. An administrator account can be created with `node scripts/createAdmin.js` after setting `ADMIN_FULL_NAME`, `ADMIN_NATIONAL_ID`, `ADMIN_PHONE`, and `ADMIN_PASSWORD` in the environment. The script does not load `.env` itself; ensure those variables and database settings are available to the process.
 
-## Testing
-There is no dedicated `test` script in the current `package.json`. Available database and runtime checks include:
+## Verification and Database Maintenance
+There is no dedicated automated `test` script in the current `package.json`. To inspect migration status, run:
 
 ```bash
 npm run migrate:status
-npm run migrate
-npm run migrate:rollback
 ```
 
-**Caution:** Migration and rollback commands change the database; run them only against a suitable development database. After starting the server, check `GET /api/health`.
+`npm run migrate` applies migrations and `npm run migrate:rollback` reverses a migration batch; both modify the database and are not test commands. Use them only when appropriate, with backups and a suitable environment. After starting the server, check `GET /api/health`.
 
 ## Documentation
 - [Arabic README](README.ar.md)
 - [Frontend repository](https://github.com/ahalnaji002/Salman-Family-Registry-Frontend)
 - [Environment template](.env.example)
-- **Deployment:** Use a strong `JWT_SECRET`, secure MySQL credentials, persistent storage for uploads, and `MYSQLDUMP_PATH` when needed.
+- **Deployment:** Use a strong `JWT_SECRET`, secure MySQL credentials, persistent storage for uploads and backups, and `MYSQLDUMP_PATH` when needed. The password-recovery API currently returns `development_code` in its response; remove or restrict this development-only behavior before exposing the recovery endpoints in production. Automated SMS sending is not yet integrated.

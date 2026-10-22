@@ -20,20 +20,30 @@ REST API for the Salman Family Registry, handling authentication, access control
 - **Frontend:** Separate React application ([Frontend repository](https://github.com/ahalnaji002/Salman-Family-Registry-Frontend)).
 
 ## Project Structure
-Verified paths and files:
+High-level overview of the main directories and configuration files:
 
 ```text
-.
-├── src/
-│   ├── server.js
-│   ├── app.js                  # imported by server.js
-│   ├── config/
-│   │   └── database           # imported by server.js
-│   └── routes/
-│       └── authRoutes.js
+backend/
+├── backups/
+├── database/
+│   ├── migrations/
+│   └── seeds/
 ├── scripts/
-│   └── createAdmin.js
+├── src/
+│   ├── config/
+│   ├── controllers/
+│   ├── middlewares/
+│   ├── models/
+│   ├── routes/
+│   ├── services/
+│   ├── uploads/
+│   │   └── family-photos/
+│   ├── utils/
+│   ├── validators/
+│   ├── app.js
+│   └── server.js
 ├── .env.example
+├── knexfile.js
 ├── package.json
 ├── README.md
 └── README.ar.md
